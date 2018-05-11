@@ -18,13 +18,8 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use futures::stream::{iter_ok, Skip as StreamSkip, Take as StreamTake};
-use futures::{Async, Future, Poll, Stream};
-use std::borrow::Cow;
-use std::cmp::Ordering;
-use std::io::Error as IoError;
-use std::marker::PhantomData;
-use std::vec::IntoIter as VecIntoIter;
+use futures::{prelude::*, stream::iter_ok};
+use std::{cmp::Ordering, io::Error as IoError, u64};
 
 /// Description of a query to apply on a datastore.
 ///
@@ -33,17 +28,60 @@ use std::vec::IntoIter as VecIntoIter;
 #[derive(Debug, Clone)]
 pub struct Query<'a, T: 'a> {
     /// Only the keys that start with `prefix` will be returned.
-    pub prefix: Cow<'a, str>,
+    pub prefix: &'a str,
     /// Filters to apply on the results.
-    pub filters: Vec<Filter<'a, T>>,
+    pub filters: &'a [Filter<'a, T>],
     /// How to order the keys. Applied sequentially.
-    pub orders: Vec<Order>,
+    pub orders: &'a [Order],
     /// Number of elements to skip from at the start of the results.
     pub skip: u64,
     /// Maximum number of elements in the results.
     pub limit: u64,
     /// Only return keys. If true, then all the `Vec`s of the data will be empty.
     pub keys_only: bool,
+}
+
+impl<'a, T> Query<'a, T> {
+    pub fn new() -> Query<'a, T> {
+        Query {
+            prefix: "",
+            filters: &[],
+            orders: &[],
+            skip: 0,
+            limit: u64::MAX,
+            keys_only: false,
+        }
+    }
+
+    pub fn limit(&mut self, val: u64) -> &mut Self {
+        self.limit = val;
+        self
+    }
+
+    pub fn skip(&mut self, val: u64) -> &mut Self {
+        self.skip = val;
+        self
+    }
+
+    pub fn keys_only(&mut self, val: bool) -> &mut Self {
+        self.keys_only = val;
+        self
+    }
+
+    pub fn orderings(&mut self, val: &'a [Order]) -> &mut Self {
+        self.orders = val;
+        self
+    }
+
+    pub fn filters(&mut self, val: &'a [Filter<'a, T>]) -> &mut Self {
+        self.filters = val;
+        self
+    }
+
+    pub fn prefix(&mut self, val: &'a str) -> &mut Self {
+        self.prefix = val;
+        self
+    }
 }
 
 /// A filter to apply to the results set.
@@ -55,11 +93,17 @@ pub struct Filter<'a, T: 'a> {
     pub operation: FilterOp,
 }
 
+impl<'a, T> Filter<'a, T> {
+    pub fn new(ty: FilterTy<'a, T>, op: FilterOp) -> Filter<'a, T> {
+        Filter { ty, operation: op }
+    }
+}
+
 /// Type of filter and value to compare with.
 #[derive(Debug, Clone)]
 pub enum FilterTy<'a, T: 'a> {
     /// Compare the key with a reference value.
-    KeyCompare(Cow<'a, str>),
+    KeyCompare(&'a str),
     /// Compare the value with a reference value.
     ValueCompare(&'a T),
 }
@@ -91,235 +135,72 @@ pub enum Order {
 /// Naively applies a query on a set of results.
 pub fn naive_apply_query<'a, S, V>(
     stream: S,
-    query: Query<'a, V>,
-) -> StreamTake<
-    StreamSkip<
-        NaiveKeysOnlyApply<
-            NaiveApplyOrdered<
-                NaiveFiltersApply<'a, NaivePrefixApply<'a, S>, VecIntoIter<Filter<'a, V>>>,
-                V,
-            >,
-        >,
-    >,
->
+    query: &Query<'a, V>,
+) -> impl Stream<Item = (String, V), Error = IoError> + 'a
 where
     S: Stream<Item = (String, V), Error = IoError> + 'a,
-    V: Clone + PartialOrd + Default + 'static,
+    V: PartialOrd + Default + 'static,
 {
-    let prefixed = naive_apply_prefix(stream, query.prefix);
-    let filtered = naive_apply_filters(prefixed, query.filters.into_iter());
-    let ordered = naive_apply_ordered(filtered, query.orders);
-    let keys_only = naive_apply_keys_only(ordered, query.keys_only);
-    naive_apply_skip_limit(keys_only, query.skip, query.limit)
-}
+    let prefix = query.prefix;
+    let filters = query.filters;
+    let orders = query.orders;
+    let keys_only = query.keys_only;
 
-/// Skips the `skip` first element of a stream and only returns `limit` elements.
-#[inline]
-pub fn naive_apply_skip_limit<S, T>(stream: S, skip: u64, limit: u64) -> StreamTake<StreamSkip<S>>
-where
-    S: Stream<Item = (String, T), Error = IoError>,
-{
-    stream.skip(skip).take(limit)
-}
+    let prefixed = stream.filter(move |item| item.0.starts_with(prefix));
 
-/// Filters the result of a stream to empty values if `keys_only` is true.
-#[inline]
-pub fn naive_apply_keys_only<S, T>(stream: S, keys_only: bool) -> NaiveKeysOnlyApply<S>
-where
-    S: Stream<Item = (String, T), Error = IoError>,
-{
-    NaiveKeysOnlyApply {
-        keys_only: keys_only,
-        stream: stream,
-    }
-}
-
-/// Returned by `naive_apply_keys_only`.
-#[derive(Debug, Clone)]
-pub struct NaiveKeysOnlyApply<S> {
-    keys_only: bool,
-    stream: S,
-}
-
-impl<S, T> Stream for NaiveKeysOnlyApply<S>
-where
-    S: Stream<Item = (String, T), Error = IoError>,
-    T: Default,
-{
-    type Item = (String, T);
-    type Error = IoError;
-
-    #[inline]
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        if self.keys_only {
-            Ok(Async::Ready(try_ready!(self.stream.poll()).map(|mut v| {
-                v.1 = Default::default();
-                v
-            })))
-        } else {
-            self.stream.poll()
-        }
-    }
-}
-
-/// Filters the result of a stream to only keep the results with a prefix.
-#[inline]
-pub fn naive_apply_prefix<'a, S, T>(stream: S, prefix: Cow<'a, str>) -> NaivePrefixApply<'a, S>
-where
-    S: Stream<Item = (String, T), Error = IoError>,
-{
-    NaivePrefixApply {
-        prefix: prefix,
-        stream: stream,
-    }
-}
-
-/// Returned by `naive_apply_prefix`.
-#[derive(Debug, Clone)]
-pub struct NaivePrefixApply<'a, S> {
-    prefix: Cow<'a, str>,
-    stream: S,
-}
-
-impl<'a, S, T> Stream for NaivePrefixApply<'a, S>
-where
-    S: Stream<Item = (String, T), Error = IoError>,
-{
-    type Item = (String, T);
-    type Error = IoError;
-
-    #[inline]
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        loop {
-            let item = try_ready!(self.stream.poll());
-            match item {
-                Some(i) => {
-                    if i.0.starts_with(&*self.prefix) {
-                        return Ok(Async::Ready(Some(i)));
-                    }
-                }
-                None => return Ok(Async::Ready(None)),
+    let filtered = prefixed.filter(move |item| {
+        for filter in filters {
+            if !naive_filter_test(&item, filter) {
+                return false;
             }
         }
-    }
-}
+        true
+    });
 
-/// Applies orderings on the stream data. Will simply pass data through if the list of orderings
-/// is empty. Otherwise will need to collect.
-pub fn naive_apply_ordered<'a, S, I, V>(stream: S, orders_iter: I) -> NaiveApplyOrdered<'a, S, V>
-where
-    S: Stream<Item = (String, V), Error = IoError> + 'a,
-    I: IntoIterator<Item = Order>,
-    I::IntoIter: 'a,
-    V: PartialOrd + 'static,
-{
-    let orders_iter = orders_iter.into_iter();
-    if orders_iter.size_hint().1 == Some(0) {
-        return NaiveApplyOrdered {
-            inner: NaiveApplyOrderedInner::PassThrough(stream),
-        };
-    }
+    let ordered = if orders.is_empty() {
+        EitherStream::A(filtered)
+    } else {
+        let ordered = filtered
+            .collect()
+            .and_then(move |mut collected| {
+                sort(&mut collected, orders);
+                Ok(iter_ok(collected.into_iter()))
+            })
+            .flatten_stream();
+        // in futures >= 0.2 `futures::Either` implements `Stream`
+        EitherStream::B(ordered)
+    };
 
-    let collected = stream
-        .collect()
-        .and_then(move |mut collected| {
-            for order in orders_iter {
-                match order {
-                    Order::ByValueAsc => {
-                        collected.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
-                    }
-                    Order::ByValueDesc => {
-                        collected.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
-                    }
-                    Order::ByKeyAsc => {
-                        collected.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
-                    }
-                    Order::ByKeyDesc => {
-                        collected.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
-                    }
-                }
+    ordered
+        .map(move |mut item| {
+            if keys_only {
+                item.1 = Default::default()
             }
-            Ok(iter_ok(collected.into_iter()))
+            item
         })
-        .flatten_stream();
-
-    NaiveApplyOrdered {
-        inner: NaiveApplyOrderedInner::Collected(Box::new(collected)),
-    }
+        .skip(query.skip)
+        .take(query.limit)
 }
 
-/// Returned by `naive_apply_ordered`.
-pub struct NaiveApplyOrdered<'a, S, T> {
-    inner: NaiveApplyOrderedInner<'a, S, T>,
-}
-
-enum NaiveApplyOrderedInner<'a, S, T> {
-    PassThrough(S),
-    Collected(Box<Stream<Item = (String, T), Error = IoError> + 'a>),
-}
-
-impl<'a, S, V> Stream for NaiveApplyOrdered<'a, S, V>
-where
-    S: Stream<Item = (String, V), Error = IoError>,
-{
-    type Item = (String, V);
-    type Error = IoError;
-
-    #[inline]
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        match self.inner {
-            NaiveApplyOrderedInner::PassThrough(ref mut s) => s.poll(),
-            NaiveApplyOrderedInner::Collected(ref mut s) => s.poll(),
-        }
-    }
-}
-
-/// Filters the result of a stream to apply a set of filters.
+// Sort collected entries by given order constraints.
 #[inline]
-pub fn naive_apply_filters<'a, S, I, V>(stream: S, filters: I) -> NaiveFiltersApply<'a, S, I>
+fn sort<T>(collected: &mut Vec<(String, T)>, orders: &[Order])
 where
-    S: Stream<Item = (String, V), Error = IoError>,
-    I: Iterator<Item = Filter<'a, V>> + Clone,
-    V: 'a,
+    T: PartialOrd,
 {
-    NaiveFiltersApply {
-        filters: filters,
-        stream: stream,
-        marker: PhantomData,
-    }
-}
-
-/// Returned by `naive_apply_prefix`.
-#[derive(Debug, Clone)]
-pub struct NaiveFiltersApply<'a, S, I> {
-    filters: I,
-    stream: S,
-    marker: PhantomData<&'a ()>,
-}
-
-impl<'a, S, I, T> Stream for NaiveFiltersApply<'a, S, I>
-where
-    S: Stream<Item = (String, T), Error = IoError>,
-    I: Iterator<Item = Filter<'a, T>> + Clone,
-    T: PartialOrd + 'a,
-{
-    type Item = (String, T);
-    type Error = IoError;
-
-    #[inline]
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        'outer: loop {
-            let item = try_ready!(self.stream.poll());
-            match item {
-                Some(i) => {
-                    for filter in self.filters.clone() {
-                        if !naive_filter_test(&i, &filter) {
-                            continue 'outer;
-                        }
-                    }
-                    return Ok(Async::Ready(Some(i)));
-                }
-                None => return Ok(Async::Ready(None)),
+    for order in orders {
+        match order {
+            Order::ByValueAsc => {
+                collected.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(Ordering::Equal));
+            }
+            Order::ByValueDesc => {
+                collected.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+            }
+            Order::ByKeyAsc => {
+                collected.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+            }
+            Order::ByKeyDesc => {
+                collected.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal));
             }
         }
     }
@@ -340,11 +221,33 @@ where
     };
 
     match filter.ty {
-        FilterTy::KeyCompare(ref ref_value) => {
-            ((&*entry.0).cmp(&**ref_value) == expected_ordering) != revert_expected
+        FilterTy::KeyCompare(ref_value) => {
+            (entry.0.as_str().cmp(ref_value) == expected_ordering) != revert_expected
         }
-        FilterTy::ValueCompare(ref ref_value) => {
-            (entry.1.partial_cmp(&**ref_value) == Some(expected_ordering)) != revert_expected
+        FilterTy::ValueCompare(ref_value) => {
+            (entry.1.partial_cmp(ref_value) == Some(expected_ordering)) != revert_expected
+        }
+    }
+}
+
+// In futures >= 0.2 `futures::Either` implements `Stream`
+enum EitherStream<A, B> {
+    A(A),
+    B(B),
+}
+
+impl<A, B> Stream for EitherStream<A, B>
+where
+    A: Stream,
+    B: Stream<Item = A::Item, Error = A::Error>,
+{
+    type Item = A::Item;
+    type Error = A::Error;
+
+    fn poll(&mut self) -> Poll<Option<A::Item>, A::Error> {
+        match self {
+            EitherStream::A(a) => a.poll(),
+            EitherStream::B(b) => b.poll(),
         }
     }
 }

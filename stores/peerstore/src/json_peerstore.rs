@@ -81,15 +81,7 @@ impl<'a> Peerstore for &'a JsonPeerstore {
     }
 
     fn peers(self) -> Self::PeersIter {
-        let query = self.store.query(Query {
-            prefix: "".into(),
-            filters: vec![],
-            orders: vec![],
-            skip: 0,
-            limit: u64::max_value(),
-            keys_only: false,
-        });
-
+        let query = self.store.query(Query::new().keys_only(true));
         let list = query
             .filter_map(|(key, info)| {
                 if info.addrs().count() == 0 {

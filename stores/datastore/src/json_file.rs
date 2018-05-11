@@ -199,7 +199,7 @@ where
         self.content.remove(&key.to_owned())
     }
 
-    fn query(self, query: Query<T>) -> Self::QueryResult {
+    fn query(self, query: &Query<T>) -> Self::QueryResult {
         let content = self.content.clone();
 
         let keys_only = query.keys_only;
@@ -311,19 +311,16 @@ mod tests {
         datastore.flush().unwrap();
 
         let query = datastore
-            .query(Query {
-                prefix: "fo".into(),
-                filters: vec![
-                    Filter {
-                        ty: FilterTy::ValueCompare(&vec![6, 7, 8].into()),
-                        operation: FilterOp::NotEqual,
-                    },
-                ],
-                orders: vec![Order::ByKeyDesc],
-                skip: 1,
-                limit: u64::max_value(),
-                keys_only: false,
-            })
+            .query(
+                Query::new()
+                    .prefix("fo")
+                    .filters(&[Filter::new(
+                        FilterTy::ValueCompare(&vec![6, 7, 8]),
+                        FilterOp::NotEqual,
+                    )])
+                    .orderings(&[Order::ByKeyDesc])
+                    .skip(1),
+            )
             .collect()
             .wait()
             .unwrap();

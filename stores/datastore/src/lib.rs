@@ -72,25 +72,22 @@
 //! use futures::{Future, Stream};
 //!
 //! let datastore = JsonFileDatastore::<Vec<u8>>::new("/tmp/test.json").unwrap();
-//! let query = datastore.query(Query {
+//! let query = datastore.query(Query::new()
 //!     // Only return the keys that start with this prefix.
-//!     prefix: "fo".into(),
+//!     .prefix("fo")
 //!     // List of filters for the keys and/or values.
-//!     filters: vec![
-//!         Filter {
-//!             ty: FilterTy::ValueCompare(&vec![6, 7, 8].into()),
-//!             operation: FilterOp::NotEqual,
-//!         },
-//!     ],
+//!     .filters(&[
+//!         Filter::new(FilterTy::ValueCompare(&vec![6, 7, 8]), FilterOp::NotEqual)
+//!     ])
 //!     // Order in which to sort the results.
-//!     orders: vec![Order::ByKeyDesc],
+//!     .orderings(&[Order::ByKeyDesc])
 //!     // Number of entries to skip at the beginning of the results (after sorting).
-//!     skip: 1,
+//!     .skip(1)
 //!     // Limit to the number of entries to return (use `u64::max_value()` for no limit).
-//!     limit: 12,
+//!     .limit(12)
 //!     // If true, don't load the values. For optimization purposes.
-//!     keys_only: false,
-//! });
+//!     .keys_only(false)
+//! );
 //!
 //! let results = query.collect().wait().unwrap();
 //! println!("{:?}", results);
@@ -99,7 +96,6 @@
 
 extern crate base64;
 extern crate chashmap;
-#[macro_use]
 extern crate futures;
 extern crate serde;
 extern crate serde_json;
@@ -173,5 +169,5 @@ pub trait Datastore<T> {
     ///
     /// This operation is expensive on some implementations and cheap on others. It is your
     /// responsibility to pick the right implementation for the right job.
-    fn query(self, query: Query<T>) -> Self::QueryResult;
+    fn query(self, query: &Query<T>) -> Self::QueryResult;
 }
