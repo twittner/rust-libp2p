@@ -20,7 +20,8 @@
 
 use crate::muxing::StreamMuxer;
 use crate::{
-    Endpoint, Multiaddr, PeerId,
+    Endpoint,
+    peer_id::PeerId,
     nodes::{
         collection::{
             CollectionEvent,
@@ -38,6 +39,7 @@ use crate::{
 };
 use fnv::FnvHashMap;
 use futures::{prelude::*, future};
+use multiaddr::Multiaddr;
 use std::{
     collections::hash_map::{Entry, OccupiedEntry},
     io::{Error as IoError, ErrorKind as IoErrorKind}

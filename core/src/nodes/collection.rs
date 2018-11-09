@@ -19,7 +19,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    PeerId,
+    peer_id::PeerId,
     muxing::StreamMuxer,
     nodes::{
         node::Substream,

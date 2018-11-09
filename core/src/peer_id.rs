@@ -19,9 +19,9 @@
 // DEALINGS IN THE SOFTWARE.
 
 use bs58;
+use crate::public_key::PublicKey;
 use multihash;
 use std::{fmt, str::FromStr};
-use PublicKey;
 
 /// Identifier of a peer of the network.
 ///

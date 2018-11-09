@@ -19,7 +19,6 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    Dialer, Listener, Multiaddr, PeerId, InboundUpgrade, OutboundUpgrade, UpgradeInfo,
     muxing::StreamMuxer,
     nodes::{
         handled_node::NodeHandler,
@@ -27,9 +26,13 @@ use crate::{
         protocols_handler::{NodeHandlerWrapper, ProtocolsHandler},
         raw_swarm::{RawSwarm, RawSwarmEvent, ConnectedPoint}
     },
-    topology::Topology
+    peer_id::PeerId,
+    topology::Topology,
+    transport::{Dialer, Listener},
+    upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo}
 };
 use futures::prelude::*;
+use multiaddr::Multiaddr;
 use std::{fmt, io, ops::{Deref, DerefMut}};
 
 /// Contains the state of the network, plus the way it should behave.

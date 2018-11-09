@@ -18,8 +18,9 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{Multiaddr, transport::{Dialer, Listener}};
+use crate::transport::{Dialer, Listener};
 use futures::prelude::*;
+use multiaddr::Multiaddr;
 use std::marker::PhantomData;
 
 #[derive(Debug, Copy, Clone)]

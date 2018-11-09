@@ -18,8 +18,9 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{Multiaddr, transport};
+use crate::transport;
 use futures::prelude::*;
+use multiaddr::Multiaddr;
 use std::{collections::VecDeque, fmt};
 use void::Void;
 

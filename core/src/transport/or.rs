@@ -19,10 +19,10 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    Multiaddr,
     either::{EitherOutput, EitherError, EitherFuture2, EitherIncoming},
     transport::{Dialer, Listener}
 };
+use multiaddr::Multiaddr;
 
 #[derive(Debug, Copy, Clone)]
 pub struct Or<A, B>(A, B);

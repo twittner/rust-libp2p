@@ -18,8 +18,9 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{muxing::{Shutdown, StreamMuxer}, Multiaddr};
+use crate::muxing::{Shutdown, StreamMuxer};
 use futures::prelude::*;
+use multiaddr::Multiaddr;
 use std::{fmt, io::{Error as IoError, Read, Write}};
 use tokio_io::{AsyncRead, AsyncWrite};
 

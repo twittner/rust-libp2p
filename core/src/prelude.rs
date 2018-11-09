@@ -1,4 +1,4 @@
-// Copyright 2017-2018 Parity Technologies (UK) Ltd.
+// Copyright 2018 Parity Technologies (UK) Ltd.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the "Software"),
@@ -18,39 +18,26 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::transport::{Dialer, Listener};
-use multiaddr::Multiaddr;
-use futures::prelude::*;
-use void::Void;
-
-#[derive(Debug, Copy, Clone)]
-pub struct DeniedDialer;
-
-impl Dialer for DeniedDialer {
-    type Output = Void;
-    type Error = Void;
-    type Outbound = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
-
-    fn dial(self, addr: Multiaddr) -> Result<Self::Outbound, (Self, Multiaddr)> {
-        Err((self, addr))
+pub use crate::{
+    muxing::StreamMuxer,
+    peer_id::PeerId,
+    public_key::PublicKey,
+    transport::{
+        Dialer,
+        DialerExt,
+        Listener,
+        ListenerExt,
+        Transport
+    },
+    upgrade::{
+        UpgradeInfo,
+        InboundUpgrade,
+        InboundUpgradeExt,
+        OutboundUpgrade,
+        OutboundUpgradeExt,
+        apply_inbound,
+        apply_outbound
     }
-}
+};
 
-#[derive(Debug, Copy, Clone)]
-pub struct DeniedListener;
-
-impl Listener for DeniedListener {
-    type Output = Void;
-    type Error = Void;
-    type Inbound = Box<Stream<Item = (Self::Upgrade, Multiaddr), Error = std::io::Error> + Send>;
-    type Upgrade = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
-
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Inbound, Multiaddr), (Self, Multiaddr)> {
-        Err((self, addr))
-    }
-
-    fn nat_traversal(&self, _server: &Multiaddr, _observed: &Multiaddr) -> Option<Multiaddr> {
-        None
-    }
-}
-
+pub use multiaddr::Multiaddr;

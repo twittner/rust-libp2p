@@ -19,7 +19,8 @@
 // DEALINGS IN THE SOFTWARE.
 
 use std::collections::HashMap;
-use {Multiaddr, PeerId};
+use crate::peer_id::PeerId;
+use multiaddr::Multiaddr;
 
 /// Storage for the network topology.
 pub trait Topology {

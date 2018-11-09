@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use PeerId;
+use crate::peer_id::PeerId;
 use keys_proto;
 use protobuf::{self, Message};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};

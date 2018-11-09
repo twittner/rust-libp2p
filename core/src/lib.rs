@@ -207,16 +207,12 @@ mod tests;
 pub mod either;
 pub mod muxing;
 pub mod nodes;
+pub mod prelude;
 pub mod topology;
 pub mod transport;
 pub mod upgrade;
 
-pub use self::multiaddr::Multiaddr;
-pub use self::muxing::StreamMuxer;
-pub use self::peer_id::PeerId;
-pub use self::public_key::PublicKey;
-pub use self::transport::{Dialer, DialerExt, Listener, ListenerExt, Transport};
-pub use self::upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo};
+pub use self::prelude::*;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Endpoint {
