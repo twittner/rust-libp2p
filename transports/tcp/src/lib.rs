@@ -39,7 +39,7 @@
 //! documentation of `swarm` and of libp2p in general to learn how to use the `Transport` trait.
 
 extern crate futures;
-extern crate libp2p_core as swarm;
+extern crate libp2p_core;
 #[macro_use]
 extern crate log;
 extern crate multiaddr;
@@ -48,12 +48,12 @@ extern crate tokio_io;
 extern crate tokio_tcp;
 
 use futures::{future, future::FutureResult, prelude::*, Async, Poll};
+use libp2p_core::prelude::*;
 use multiaddr::{Protocol, Multiaddr, ToMultiaddr};
 use std::fmt;
 use std::io::{Error as IoError, Read, Write};
 use std::net::SocketAddr;
 use std::time::Duration;
-use swarm::Transport;
 use tk_listen::{ListenExt, SleepOnError};
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_tcp::{ConnectFuture, Incoming, TcpListener, TcpStream};
@@ -62,7 +62,7 @@ use tokio_tcp::{ConnectFuture, Incoming, TcpListener, TcpStream};
 ///
 /// The TCP sockets created by libp2p will need to be progressed by running the futures and streams
 /// obtained by libp2p through the tokio reactor.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TcpConfig {
     /// How long a listener should sleep after receiving an error, before trying again.
     sleep_on_error: Duration,
@@ -78,10 +78,8 @@ pub struct TcpConfig {
     nodelay: Option<bool>,
 }
 
-impl TcpConfig {
-    /// Creates a new configuration object for TCP/IP.
-    #[inline]
-    pub fn new() -> TcpConfig {
+impl Default for TcpConfig {
+    fn default() -> Self {
         TcpConfig {
             sleep_on_error: Duration::from_millis(100),
             recv_buffer_size: None,
@@ -90,6 +88,14 @@ impl TcpConfig {
             keepalive: None,
             nodelay: None,
         }
+    }
+}
+
+impl TcpConfig {
+    /// Creates a new configuration object for TCP/IP.
+    #[inline]
+    pub fn new() -> Self {
+        TcpConfig::default()
     }
 
     /// Sets the size of the recv buffer size to set for opened sockets.
@@ -128,13 +134,38 @@ impl TcpConfig {
     }
 }
 
-impl Transport for TcpConfig {
+impl Dialer for TcpConfig {
     type Output = TcpTransStream;
-    type Listener = TcpListenStream;
-    type ListenerUpgrade = FutureResult<Self::Output, IoError>;
-    type Dial = TcpDialFut;
+    type Error = IoError;
+    type Outbound = TcpDialFut;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn dial(self, addr: Multiaddr) -> Result<Self::Outbound, (Self, Multiaddr)> {
+        if let Ok(socket_addr) = multiaddr_to_socketaddr(&addr) {
+            // As an optimization, we check that the address is not of the form `0.0.0.0`.
+            // If so, we instantly refuse dialing instead of going through the kernel.
+            if socket_addr.port() != 0 && !socket_addr.ip().is_unspecified() {
+                debug!("Dialing {}", addr);
+                Ok(TcpDialFut {
+                    inner: TcpStream::connect(&socket_addr),
+                    config: self,
+                })
+            } else {
+                debug!("Instantly refusing dialing {}, as it is invalid", addr);
+                Err((self, addr))
+            }
+        } else {
+            Err((self, addr))
+        }
+    }
+}
+
+impl Listener for TcpConfig {
+    type Output = TcpTransStream;
+    type Error = IoError;
+    type Inbound = TcpListenStream;
+    type Upgrade = FutureResult<Self::Output, Self::Error>;
+
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Inbound, Multiaddr), (Self, Multiaddr)> {
         if let Ok(socket_addr) = multiaddr_to_socketaddr(&addr) {
             let listener = TcpListener::bind(&socket_addr);
             // We need to build the `Multiaddr` to return from this function. If an error happened,
@@ -163,25 +194,6 @@ impl Transport for TcpConfig {
                 },
                 new_addr,
             ))
-        } else {
-            Err((self, addr))
-        }
-    }
-
-    fn dial(self, addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
-        if let Ok(socket_addr) = multiaddr_to_socketaddr(&addr) {
-            // As an optimization, we check that the address is not of the form `0.0.0.0`.
-            // If so, we instantly refuse dialing instead of going through the kernel.
-            if socket_addr.port() != 0 && !socket_addr.ip().is_unspecified() {
-                debug!("Dialing {}", addr);
-                Ok(TcpDialFut {
-                    inner: TcpStream::connect(&socket_addr),
-                    config: self,
-                })
-            } else {
-                debug!("Instantly refusing dialing {}, as it is invalid", addr);
-                Err((self, addr))
-            }
         } else {
             Err((self, addr))
         }
@@ -399,7 +411,7 @@ mod tests {
     use multiaddr::Multiaddr;
     use std;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use swarm::Transport;
+    use libp2p_core::prelude::*;
     use tokio_io;
 
     #[test]
