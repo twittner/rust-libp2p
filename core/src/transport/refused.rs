@@ -1,4 +1,4 @@
-// Copyright 2017-2018 Parity Technologies (UK) Ltd.
+// Copyright 2018 Parity Technologies (UK) Ltd.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the "Software"),
@@ -20,14 +20,26 @@
 
 use crate::{Multiaddr, transport::{Dialer, Listener}};
 use futures::prelude::*;
-use void::Void;
+use std::marker::PhantomData;
 
 #[derive(Debug, Copy, Clone)]
-pub struct Denied;
+pub struct Refused<T, E> {
+    _output: PhantomData<T>,
+    _error: PhantomData<E>
+}
 
-impl Dialer for Denied {
-    type Output = Void;
-    type Error = Void;
+impl<T, E> Refused<T, E> {
+    pub fn new() -> Self {
+        Refused {
+            _output: PhantomData,
+            _error: PhantomData
+        }
+    }
+}
+
+impl<T, E> Dialer for Refused<T, E> {
+    type Output = T;
+    type Error = E;
     type Outbound = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
 
     fn dial(self, addr: Multiaddr) -> Result<Self::Outbound, (Self, Multiaddr)> {
@@ -35,9 +47,9 @@ impl Dialer for Denied {
     }
 }
 
-impl Listener for Denied {
-    type Output = Void;
-    type Error = Void;
+impl<T, E> Listener for Refused<T, E> {
+    type Output = T;
+    type Error = E;
     type Inbound = Box<Stream<Item = (Self::Upgrade, Multiaddr), Error = std::io::Error> + Send>;
     type Upgrade = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
 
@@ -49,5 +61,4 @@ impl Listener for Denied {
         None
     }
 }
-
 

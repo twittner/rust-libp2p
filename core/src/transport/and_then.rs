@@ -18,109 +18,162 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use futures::prelude::*;
+use futures::{future::Either, prelude::*};
 use multiaddr::Multiaddr;
-use nodes::raw_swarm::ConnectedPoint;
-use std::io::Error as IoError;
-use transport::Transport;
+use crate::transport::{Dialer, Listener};
 
-/// See the `Transport::and_then` method.
-#[inline]
-pub fn and_then<T, C>(transport: T, upgrade: C) -> AndThen<T, C> {
-    AndThen { transport, upgrade }
+#[derive(Debug, Copy, Clone)]
+pub struct ListenerAndThen<T, F> { inner: T, fun: F }
+
+impl<T, F> ListenerAndThen<T, F> {
+    pub fn new(inner: T, fun: F) -> Self {
+        ListenerAndThen { inner, fun }
+    }
 }
 
-/// See the `Transport::and_then` method.
-#[derive(Debug, Clone)]
-pub struct AndThen<T, C> {
-    transport: T,
-    upgrade: C,
-}
-
-impl<T, C, F, O> Transport for AndThen<T, C>
+impl<D, F> Dialer for ListenerAndThen<D, F>
 where
-    T: Transport + 'static,
-    T::Dial: Send,
-    T::Listener: Send,
-    T::ListenerUpgrade: Send,
-    C: FnOnce(T::Output, ConnectedPoint) -> F + Clone + Send + 'static,
-    F: Future<Item = O, Error = IoError> + Send + 'static,
+    D: Dialer
 {
-    type Output = O;
-    type Listener = Box<Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = IoError> + Send>;
-    type ListenerUpgrade = Box<Future<Item = O, Error = IoError> + Send>;
-    type Dial = Box<Future<Item = O, Error = IoError> + Send>;
+    type Output = D::Output;
+    type Error = D::Error;
+    type Outbound = D::Outbound;
 
-    #[inline]
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
-        let upgrade = self.upgrade;
-
-        let (listening_stream, new_addr) = match self.transport.listen_on(addr) {
-            Ok((l, new_addr)) => (l, new_addr),
-            Err((transport, addr)) => {
-                let builder = AndThen {
-                    transport,
-                    upgrade,
-                };
-
-                return Err((builder, addr));
-            }
-        };
-
-        let listen_addr = new_addr.clone();
-
-        // Try to negotiate the protocol.
-        // Note that failing to negotiate a protocol will never produce a future with an error.
-        // Instead the `stream` will produce `Ok(Err(...))`.
-        // `stream` can only produce an `Err` if `listening_stream` produces an `Err`.
-        let stream = listening_stream.map(move |(connection, client_addr)| {
-            let upgrade = upgrade.clone();
-            let connected_point = ConnectedPoint::Listener {
-                listen_addr: listen_addr.clone(),
-                send_back_addr: client_addr.clone(),
-            };
-
-            let future = connection.and_then(move |stream| {
-                upgrade(stream, connected_point)
-            });
-
-            (Box::new(future) as Box<_>, client_addr)
-        });
-
-        Ok((Box::new(stream), new_addr))
-    }
-
-    #[inline]
-    fn dial(self, addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
-        let upgrade = self.upgrade;
-
-        let dialed_fut = match self.transport.dial(addr.clone()) {
-            Ok(f) => f,
-            Err((transport, addr)) => {
-                let builder = AndThen {
-                    transport,
-                    upgrade,
-                };
-
-                return Err((builder, addr));
-            }
-        };
-
-        let connected_point = ConnectedPoint::Dialer {
-            address: addr,
-        };
-
-        let future = dialed_fut
-            // Try to negotiate the protocol.
-            .and_then(move |connection| {
-                upgrade(connection, connected_point)
-            });
-
-        Ok(Box::new(future))
-    }
-
-    #[inline]
-    fn nat_traversal(&self, server: &Multiaddr, observed: &Multiaddr) -> Option<Multiaddr> {
-        self.transport.nat_traversal(server, observed)
+    fn dial(self, addr: Multiaddr) -> Result<Self::Outbound, (Self, Multiaddr)> {
+        let fun = self.fun;
+        self.inner.dial(addr)
+            .map_err(move |(dialer, addr)| (ListenerAndThen::new(dialer, fun), addr))
     }
 }
+
+impl<L, F, T> Listener for ListenerAndThen<L, F>
+where
+    L: Listener,
+    F: FnOnce(L::Output, Multiaddr) -> T + Clone,
+    T: IntoFuture<Error = L::Error>
+{
+    type Output = T::Item;
+    type Error = L::Error;
+    type Inbound = AndThenStream<L::Inbound, F>;
+    type Upgrade = AndThenFuture<L::Upgrade, F, T::Future>;
+
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Inbound, Multiaddr), (Self, Multiaddr)> {
+        match self.inner.listen_on(addr) {
+            Ok((stream, addr)) => Ok((AndThenStream { stream, fun: self.fun }, addr)),
+            Err((listener, addr)) => Err((ListenerAndThen::new(listener, self.fun), addr)),
+        }
+    }
+
+    fn nat_traversal(&self, server: &Multiaddr, observed: &Multiaddr) -> Option<Multiaddr> {
+        self.inner.nat_traversal(server, observed)
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct DialerAndThen<T, F> { inner: T, fun: F }
+
+impl<T, F> DialerAndThen<T, F> {
+    pub fn new(inner: T, fun: F) -> Self {
+        DialerAndThen { inner, fun }
+    }
+}
+
+impl<D, F, T> Dialer for DialerAndThen<D, F>
+where
+    D: Dialer,
+    F: FnOnce(D::Output, Multiaddr) -> T,
+    T: IntoFuture<Error = D::Error>
+{
+    type Output = T::Item;
+    type Error = D::Error;
+    type Outbound = AndThenFuture<D::Outbound, F, T::Future>;
+
+    fn dial(self, addr: Multiaddr) -> Result<Self::Outbound, (Self, Multiaddr)> {
+        let fun = self.fun;
+        match self.inner.dial(addr.clone()) {
+            Ok(future) => Ok(AndThenFuture {
+                inner: Either::A(future),
+                args: Some((fun, addr))
+            }),
+            Err((dialer, addr)) => Err((DialerAndThen::new(dialer, fun), addr))
+        }
+    }
+}
+
+impl<L, F> Listener for DialerAndThen<L, F>
+where
+    L: Listener
+{
+    type Output = L::Output;
+    type Error = L::Error;
+    type Inbound = L::Inbound;
+    type Upgrade = L::Upgrade;
+
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Inbound, Multiaddr), (Self, Multiaddr)> {
+        let fun = self.fun;
+        self.inner.listen_on(addr)
+            .map_err(move |(listener, addr)| (DialerAndThen::new(listener, fun), addr))
+    }
+
+    fn nat_traversal(&self, server: &Multiaddr, observed: &Multiaddr) -> Option<Multiaddr> {
+        self.inner.nat_traversal(server, observed)
+    }
+}
+
+pub struct AndThenStream<T, F> { stream: T, fun: F }
+
+impl<T, F, A, B, X> Stream for AndThenStream<T, F>
+where
+    T: Stream<Item = (X, Multiaddr), Error = std::io::Error>,
+    X: Future<Item = A>,
+    F: FnOnce(A, Multiaddr) -> B + Clone,
+    B: IntoFuture<Error = X::Error>
+{
+    type Item = (AndThenFuture<X, F, B::Future>, Multiaddr);
+    type Error = T::Error;
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        match self.stream.poll()? {
+            Async::Ready(Some((future, addr))) => {
+                let f = self.fun.clone();
+                let a = addr.clone();
+                let future = AndThenFuture {
+                    inner: Either::A(future),
+                    args: Some((f, a))
+                };
+                Ok(Async::Ready(Some((future, addr))))
+            }
+            Async::Ready(None) => Ok(Async::Ready(None)),
+            Async::NotReady => Ok(Async::NotReady)
+        }
+    }
+}
+
+pub struct AndThenFuture<T, F, U> {
+    inner: Either<T, U>,
+    args: Option<(F, Multiaddr)>
+}
+
+impl<T, A, F, B> Future for AndThenFuture<T, F, B::Future>
+where
+    T: Future<Item = A>,
+    F: FnOnce(A, Multiaddr) -> B,
+    B: IntoFuture<Error = T::Error>
+{
+    type Item = <B::Future as Future>::Item;
+    type Error = T::Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let future = match self.inner {
+            Either::A(ref mut future) => {
+                let item = try_ready!(future.poll());
+                let (f, a) = self.args.take().expect("Future has already finished");
+                f(item, a).into_future()
+            }
+            Either::B(ref mut future) => return future.poll()
+        };
+        self.inner = Either::B(future);
+        Ok(Async::NotReady)
+    }
+}
+

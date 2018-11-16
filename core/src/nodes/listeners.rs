@@ -18,10 +18,10 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+use crate::{Multiaddr, transport};
 use futures::prelude::*;
 use std::fmt;
 use void::Void;
-use {Multiaddr, Transport};
 use std::collections::VecDeque;
 
 /// Implementation of `futures::Stream` that allows listening on multiaddresses.
@@ -77,7 +77,7 @@ use std::collections::VecDeque;
 /// ```
 pub struct ListenersStream<TTrans>
 where
-    TTrans: Transport,
+    TTrans: transport::Listener,
 {
     /// Transport used to spawn listeners.
     transport: TTrans,
@@ -89,10 +89,10 @@ where
 #[derive(Debug)]
 struct Listener<TTrans>
 where
-    TTrans: Transport,
+    TTrans: transport::Listener,
 {
     /// The object that actually listens.
-    listener: TTrans::Listener,
+    listener: TTrans::Inbound,
     /// Address it is listening on.
     address: Multiaddr,
 }
@@ -100,12 +100,12 @@ where
 /// Event that can happen on the `ListenersStream`.
 pub enum ListenersEvent<TTrans>
 where
-    TTrans: Transport,
+    TTrans: transport::Listener,
 {
     /// A connection is incoming on one of the listeners.
     Incoming {
         /// The produced upgrade.
-        upgrade: TTrans::ListenerUpgrade,
+        upgrade: TTrans::Upgrade,
         /// Address of the listener which received the connection.
         listen_addr: Multiaddr,
         /// Address used to send back data to the incoming client.
@@ -117,15 +117,15 @@ where
         /// Address of the listener which closed.
         listen_addr: Multiaddr,
         /// The listener that closed.
-        listener: TTrans::Listener,
+        listener: TTrans::Inbound,
         /// The error that happened. `Ok` if gracefully closed.
-        result: Result<(), <TTrans::Listener as Stream>::Error>,
+        result: Result<(), <TTrans::Inbound as Stream>::Error>,
     },
 }
 
 impl<TTrans> ListenersStream<TTrans>
 where
-    TTrans: Transport,
+    TTrans: transport::Listener,
 {
     /// Starts a new stream of listeners.
     #[inline]
@@ -223,7 +223,7 @@ where
 
 impl<TTrans> Stream for ListenersStream<TTrans>
 where
-    TTrans: Transport,
+    TTrans: transport::Listener,
 {
     type Item = ListenersEvent<TTrans>;
     type Error = Void; // TODO: use ! once stable
@@ -236,7 +236,7 @@ where
 
 impl<TTrans> fmt::Debug for ListenersStream<TTrans>
 where
-    TTrans: Transport + fmt::Debug,
+    TTrans: transport::Listener + fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         f.debug_struct("ListenersStream")
@@ -248,8 +248,8 @@ where
 
 impl<TTrans> fmt::Debug for ListenersEvent<TTrans>
 where
-    TTrans: Transport,
-    <TTrans::Listener as Stream>::Error: fmt::Debug,
+    TTrans: transport::Listener,
+    <TTrans::Inbound as Stream>::Error: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         match self {

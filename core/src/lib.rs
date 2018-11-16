@@ -219,7 +219,7 @@ pub use self::muxing::StreamMuxer;
 pub use self::peer_id::PeerId;
 pub use self::protocols_handler::{ProtocolsHandler, ProtocolsHandlerEvent};
 pub use self::public_key::PublicKey;
-pub use self::transport::Transport;
+pub use self::transport::{Dialer, DialerExt, Listener, ListenerExt};
 pub use self::upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo, UpgradeError};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]

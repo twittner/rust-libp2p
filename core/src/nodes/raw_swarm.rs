@@ -34,7 +34,7 @@ use crate::{
         node::Substream
     },
     nodes::listeners::{ListenersEvent, ListenersStream},
-    transport::Transport
+    transport
 };
 use fnv::FnvHashMap;
 use futures::{prelude::*, future};
@@ -46,7 +46,7 @@ use std::{
 /// Implementation of `Stream` that handles the nodes.
 pub struct RawSwarm<TTrans, TInEvent, TOutEvent, THandler>
 where
-    TTrans: Transport,
+    TTrans: transport::Listener,
 {
     /// Listeners for incoming connections.
     listeners: ListenersStream<TTrans>,
@@ -85,16 +85,16 @@ struct OutReachAttempt {
 /// Event that can happen on the `RawSwarm`.
 pub enum RawSwarmEvent<'a, TTrans: 'a, TInEvent: 'a, TOutEvent: 'a, THandler: 'a>
 where
-    TTrans: Transport,
+    TTrans: transport::Listener,
 {
     /// One of the listeners gracefully closed.
     ListenerClosed {
         /// Address of the listener which closed.
         listen_addr: Multiaddr,
         /// The listener which closed.
-        listener: TTrans::Listener,
+        listener: TTrans::Inbound,
         /// The error that happened. `Ok` if gracefully closed.
-        result: Result<(), <TTrans::Listener as Stream>::Error>,
+        result: Result<(), <TTrans::Inbound as Stream>::Error>,
     },
 
     /// A new connection arrived on a listener.
@@ -194,10 +194,10 @@ where
 
 /// A new connection arrived on a listener.
 pub struct IncomingConnectionEvent<'a, TTrans: 'a, TInEvent: 'a, TOutEvent: 'a, THandler: 'a>
-where TTrans: Transport
+where TTrans: transport::Listener
 {
     /// The produced upgrade.
-    upgrade: TTrans::ListenerUpgrade,
+    upgrade: TTrans::Upgrade,
     /// Address of the listener which received the connection.
     listen_addr: Multiaddr,
     /// Address used to send back data to the remote.
@@ -210,8 +210,9 @@ where TTrans: Transport
 
 impl<'a, TTrans, TInEvent, TOutEvent, TMuxer, THandler> IncomingConnectionEvent<'a, TTrans, TInEvent, TOutEvent, THandler>
 where
-    TTrans: Transport<Output = (PeerId, TMuxer)>,
-    TTrans::ListenerUpgrade: Send + 'static,
+    TTrans: transport::Listener<Output = (PeerId, TMuxer)>,
+    TTrans::Error: std::error::Error + Send + Sync + 'static,
+    TTrans::Upgrade: Send + 'static,
     THandler: NodeHandler<Substream = Substream<TMuxer>, InEvent = TInEvent, OutEvent = TOutEvent> + Send + 'static,
     THandler::OutboundOpenInfo: Send + 'static, // TODO: shouldn't be necessary
     TMuxer: StreamMuxer + Send + Sync + 'static,
@@ -241,7 +242,7 @@ where
 }
 
 impl<'a, TTrans, TInEvent, TOutEvent, THandler> IncomingConnectionEvent<'a, TTrans, TInEvent, TOutEvent, THandler>
-where TTrans: Transport
+where TTrans: transport::Listener
 {
     /// Address of the listener that received the connection.
     #[inline]
@@ -329,7 +330,7 @@ impl ConnectedPoint {
 impl<TTrans, TInEvent, TOutEvent, TMuxer, THandler>
     RawSwarm<TTrans, TInEvent, TOutEvent, THandler>
 where
-    TTrans: Transport + Clone,
+    TTrans: transport::Listener + Clone,
     TMuxer: StreamMuxer,
     THandler: NodeHandler<Substream = Substream<TMuxer>, InEvent = TInEvent, OutEvent = TOutEvent> + Send + 'static,
     THandler::OutboundOpenInfo: Send + 'static, // TODO: shouldn't be necessary
@@ -391,8 +392,8 @@ where
     /// The second parameter is the handler to use if we manage to reach a node.
     pub fn dial(&mut self, addr: Multiaddr, handler: THandler) -> Result<(), Multiaddr>
     where
-        TTrans: Transport<Output = (PeerId, TMuxer)>,
-        TTrans::Dial: Send + 'static,
+        TTrans: transport::Dialer<Output = (PeerId, TMuxer), Error = IoError>,
+        TTrans::Outbound: Send + 'static,
         TMuxer: StreamMuxer + Send + Sync + 'static,
         TMuxer::OutboundSubstream: Send,
         TMuxer::Substream: Send,
@@ -476,8 +477,9 @@ where
     /// given peer.
     fn start_dial_out(&mut self, peer_id: PeerId, handler: THandler, first: Multiaddr, rest: Vec<Multiaddr>)
     where
-        TTrans: Transport<Output = (PeerId, TMuxer)>,
-        TTrans::Dial: Send + 'static,
+        TTrans: transport::Dialer<Output = (PeerId, TMuxer)>,
+        <TTrans as transport::Dialer>::Error: From<IoError> + std::error::Error + Send + Sync + 'static,
+        TTrans::Outbound: Send + 'static,
         TMuxer: StreamMuxer + Send + Sync + 'static,
         TMuxer::OutboundSubstream: Send,
         TMuxer::Substream: Send,
@@ -493,7 +495,7 @@ where
                     } else {
                         let msg = format!("public key mismatch; expected = {:?}; obtained = {:?}",
                                           expected_peer_id, actual_peer_id);
-                        Err(IoError::new(IoErrorKind::Other, msg))
+                        Err(IoError::new(IoErrorKind::Other, msg).into())
                     }
                 });
                 self.active_nodes.add_reach_attempt(fut, handler)
@@ -520,9 +522,11 @@ where
     /// Provides an API similar to `Stream`, except that it cannot error.
     pub fn poll(&mut self) -> Async<RawSwarmEvent<TTrans, TInEvent, TOutEvent, THandler>>
     where
-        TTrans: Transport<Output = (PeerId, TMuxer)>,
-        TTrans::Dial: Send + 'static,
-        TTrans::ListenerUpgrade: Send + 'static,
+        TTrans: transport::Listener<Output = (PeerId, TMuxer)>,
+        TTrans: transport::Dialer<Output = (PeerId, TMuxer)>,
+        <TTrans as transport::Dialer>::Error: From<IoError> + std::error::Error + Send + Sync + 'static,
+        TTrans::Outbound: Send + 'static,
+        TTrans::Upgrade: Send + 'static,
         TMuxer: StreamMuxer + Send + Sync + 'static,
         TMuxer::OutboundSubstream: Send,
         TMuxer::Substream: Send,
@@ -654,7 +658,7 @@ fn handle_node_reached<'a, TTrans, TMuxer, TInEvent, TOutEvent, THandler>(
     event: CollectionReachEvent<TInEvent, TOutEvent, THandler>
 ) -> (ActionItem<THandler>, RawSwarmEvent<'a, TTrans, TInEvent, TOutEvent, THandler>)
 where
-    TTrans: Transport<Output = (PeerId, TMuxer)> + Clone,
+    TTrans: transport::Listener<Output = (PeerId, TMuxer)> + Clone,
     TMuxer: StreamMuxer + Send + Sync + 'static,
     TMuxer::OutboundSubstream: Send,
     TMuxer::Substream: Send,
@@ -760,7 +764,7 @@ fn handle_reach_error<'a, TTrans, TInEvent, TOutEvent, THandler>(
     error: IoError,
     handler: THandler,
 ) -> (ActionItem<THandler>, RawSwarmEvent<'a, TTrans, TInEvent, TOutEvent, THandler>)
-where TTrans: Transport
+where TTrans: transport::Listener
 {
     // Search for the attempt in `out_reach_attempts`.
     // TODO: could be more optimal than iterating over everything
@@ -829,7 +833,7 @@ where TTrans: Transport
 /// State of a peer in the system.
 pub enum Peer<'a, TTrans: 'a, TInEvent: 'a, TOutEvent: 'a, THandler: 'a>
 where
-    TTrans: Transport,
+    TTrans: transport::Listener,
 {
     /// We are connected to this peer.
     Connected(PeerConnected<'a, TInEvent>),
@@ -848,8 +852,9 @@ where
 impl<'a, TTrans, TMuxer, TInEvent, TOutEvent, THandler>
     Peer<'a, TTrans, TInEvent, TOutEvent, THandler>
 where
-    TTrans: Transport<Output = (PeerId, TMuxer)> + Clone,
-    TTrans::Dial: Send + 'static,
+    TTrans: transport::Listener + Clone,
+    TTrans: transport::Dialer<Output = (PeerId, TMuxer), Error = IoError>,
+    TTrans::Outbound: Send + 'static,
     TMuxer: StreamMuxer + Send + Sync + 'static,
     TMuxer::OutboundSubstream: Send,
     TMuxer::Substream: Send,
@@ -1057,7 +1062,7 @@ impl<'a, TInEvent, TOutEvent, THandler> PeerPendingConnect<'a, TInEvent, TOutEve
 /// Access to a peer we're not connected to.
 pub struct PeerNotConnected<'a, TTrans: 'a, TInEvent: 'a, TOutEvent: 'a, THandler: 'a>
 where
-    TTrans: Transport,
+    TTrans: transport::Listener,
 {
     peer_id: PeerId,
     nodes: &'a mut RawSwarm<TTrans, TInEvent, TOutEvent, THandler>,
@@ -1066,8 +1071,9 @@ where
 impl<'a, TTrans, TInEvent, TOutEvent, TMuxer, THandler>
     PeerNotConnected<'a, TTrans, TInEvent, TOutEvent, THandler>
 where
-    TTrans: Transport<Output = (PeerId, TMuxer)> + Clone,
-    TTrans::Dial: Send + 'static,
+    TTrans: transport::Listener + Clone,
+    TTrans: transport::Dialer<Output = (PeerId, TMuxer), Error = IoError>,
+    TTrans::Outbound: Send + 'static,
     TMuxer: StreamMuxer + Send + Sync + 'static,
     TMuxer::OutboundSubstream: Send,
     TMuxer::Substream: Send,

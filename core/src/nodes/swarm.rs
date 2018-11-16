@@ -19,7 +19,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    Transport, Multiaddr, PeerId, InboundUpgrade, OutboundUpgrade, UpgradeInfo,
+    Dialer, Listener, Multiaddr, PeerId, InboundUpgrade, OutboundUpgrade, UpgradeInfo,
     muxing::StreamMuxer,
     nodes::{
         handled_node::NodeHandler,
@@ -34,7 +34,7 @@ use std::{fmt, io, ops::{Deref, DerefMut}};
 
 /// Contains the state of the network, plus the way it should behave.
 pub struct Swarm<TTransport, TBehaviour, TTopology>
-where TTransport: Transport,
+where TTransport: Listener,
       TBehaviour: NetworkBehaviour,
 {
     raw_swarm: RawSwarm<
@@ -54,7 +54,7 @@ where TTransport: Transport,
 }
 
 impl<TTransport, TBehaviour, TTopology> Deref for Swarm<TTransport, TBehaviour, TTopology>
-where TTransport: Transport,
+where TTransport: Listener,
       TBehaviour: NetworkBehaviour,
 {
     type Target = TBehaviour;
@@ -66,7 +66,7 @@ where TTransport: Transport,
 }
 
 impl<TTransport, TBehaviour, TTopology> DerefMut for Swarm<TTransport, TBehaviour, TTopology>
-where TTransport: Transport,
+where TTransport: Listener,
       TBehaviour: NetworkBehaviour,
 {
     #[inline]
@@ -80,10 +80,11 @@ where TBehaviour: NetworkBehaviour,
       TMuxer: StreamMuxer + Send + Sync + 'static,
       <TMuxer as StreamMuxer>::OutboundSubstream: Send + 'static,
       <TMuxer as StreamMuxer>::Substream: Send + 'static,
-      TTransport: Transport<Output = (PeerId, TMuxer)> + Clone,
-      TTransport::Listener: Send + 'static,
-      TTransport::ListenerUpgrade: Send + 'static,
-      TTransport::Dial: Send + 'static,
+      TTransport: Dialer<Output = (PeerId, TMuxer), Error = io::Error> + Clone,
+      TTransport: Listener<Output = (PeerId, TMuxer)> + Clone,
+      TTransport::Inbound: Send + 'static,
+      TTransport::Upgrade: Send + 'static,
+      TTransport::Outbound: Send + 'static,
       TBehaviour::ProtocolsHandler: ProtocolsHandler<Substream = Substream<TMuxer>> + Send + 'static,
       <TBehaviour::ProtocolsHandler as ProtocolsHandler>::InEvent: Send + 'static,
       <TBehaviour::ProtocolsHandler as ProtocolsHandler>::OutEvent: Send + 'static,
@@ -173,10 +174,11 @@ where TBehaviour: NetworkBehaviour,
       TMuxer: StreamMuxer + Send + Sync + 'static,
       <TMuxer as StreamMuxer>::OutboundSubstream: Send + 'static,
       <TMuxer as StreamMuxer>::Substream: Send + 'static,
-      TTransport: Transport<Output = (PeerId, TMuxer)> + Clone,
-      TTransport::Listener: Send + 'static,
-      TTransport::ListenerUpgrade: Send + 'static,
-      TTransport::Dial: Send + 'static,
+      TTransport: Dialer<Output = (PeerId, TMuxer), Error = io::Error> + Clone,
+      TTransport: Listener<Output = (PeerId, TMuxer), Error = io::Error> + Clone,
+      TTransport::Inbound: Send + 'static,
+      TTransport::Upgrade: Send + 'static,
+      TTransport::Outbound: Send + 'static,
       TBehaviour::ProtocolsHandler: ProtocolsHandler<Substream = Substream<TMuxer>> + Send + 'static,
       <TBehaviour::ProtocolsHandler as ProtocolsHandler>::InEvent: Send + 'static,
       <TBehaviour::ProtocolsHandler as ProtocolsHandler>::OutEvent: Send + 'static,

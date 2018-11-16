@@ -285,43 +285,18 @@ where
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match self {
             EitherListenStream::First(a) => a.poll()
-                .map(|i| (i.map(|v| (v.map(|(o, addr)| (EitherFuture::First(o), addr)))))),
+                .map(|i| (i.map(|v| (v.map(|(o, addr)| (EitherFuture::A(o), addr)))))),
             EitherListenStream::Second(a) => a.poll()
-                .map(|i| (i.map(|v| (v.map(|(o, addr)| (EitherFuture::Second(o), addr)))))),
-        }
-    }
-}
-
-/// Implements `Future` and dispatches all method calls to either `First` or `Second`.
-#[derive(Debug, Copy, Clone)]
-#[must_use = "futures do nothing unless polled"]
-pub enum EitherFuture<A, B> {
-    First(A),
-    Second(B),
-}
-
-impl<AFuture, BFuture, AInner, BInner> Future for EitherFuture<AFuture, BFuture>
-where
-    AFuture: Future<Item = AInner, Error = IoError>,
-    BFuture: Future<Item = BInner, Error = IoError>,
-{
-    type Item = EitherOutput<AInner, BInner>;
-    type Error = IoError;
-
-    #[inline]
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match self {
-            EitherFuture::First(a) => a.poll().map(|v| v.map(EitherOutput::First)),
-            EitherFuture::Second(a) => a.poll().map(|v| v.map(EitherOutput::Second)),
+                .map(|i| (i.map(|v| (v.map(|(o, addr)| (EitherFuture::B(o), addr)))))),
         }
     }
 }
 
 #[derive(Debug, Copy, Clone)]
 #[must_use = "futures do nothing unless polled"]
-pub enum EitherFuture2<A, B> { A(A), B(B) }
+pub enum EitherFuture<A, B> { A(A), B(B) }
 
-impl<AFut, BFut, AItem, BItem, AError, BError> Future for EitherFuture2<AFut, BFut>
+impl<AFut, BFut, AItem, BItem, AError, BError> Future for EitherFuture<AFut, BFut>
 where
     AFut: Future<Item = AItem, Error = AError>,
     BFut: Future<Item = BItem, Error = BError>
@@ -331,13 +306,36 @@ where
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self {
-            EitherFuture2::A(a) => a.poll()
+            EitherFuture::A(a) => a.poll()
                 .map(|v| v.map(EitherOutput::First))
                 .map_err(|e| EitherError::A(e)),
 
-            EitherFuture2::B(b) => b.poll()
+            EitherFuture::B(b) => b.poll()
                 .map(|v| v.map(EitherOutput::Second))
                 .map_err(|e| EitherError::B(e))
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+#[must_use = "futures do nothing unless polled"]
+pub enum EitherIncoming<A, B> { A(A), B(B) }
+
+impl<AStream, BStream, AItem, BItem> Stream for EitherIncoming<AStream, BStream>
+where
+    AStream: Stream<Item = (AItem, Multiaddr), Error = std::io::Error>,
+    BStream: Stream<Item = (BItem, Multiaddr), Error = std::io::Error>
+{
+    type Item = (EitherFuture<AItem, BItem>, Multiaddr);
+    type Error = std::io::Error;
+
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        match self {
+            EitherIncoming::A(a) => a.poll()
+                .map(|i| (i.map(|v| (v.map(|(o, addr)| (EitherFuture::A(o), addr)))))),
+
+            EitherIncoming::B(b) => b.poll()
+                .map(|i| (i.map(|v| (v.map(|(o, addr)| (EitherFuture::B(o), addr))))))
         }
     }
 }
