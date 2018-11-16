@@ -29,7 +29,7 @@ extern crate tokio_io;
 
 use aio_limited::{Limited, Limiter};
 use futures::prelude::*;
-use libp2p_core::{Multiaddr, Transport};
+use libp2p_core::{Multiaddr, transport};
 use std::io;
 use tokio_executor::Executor;
 use tokio_io::{AsyncRead, AsyncWrite, io::{ReadHalf, WriteHalf}};
@@ -116,9 +116,9 @@ impl<C: AsyncRead + AsyncWrite> AsyncWrite for Connection<C> {
     }
 }
 
-pub struct Listener<T: Transport>(RateLimited<T::Listener>);
+pub struct Listener<T: transport::Listener>(RateLimited<T::Inbound>);
 
-impl<T: Transport> Stream for Listener<T> {
+impl<T: transport::Listener> Stream for Listener<T> {
     type Item = (ListenerUpgrade<T>, Multiaddr);
     type Error = io::Error;
 
@@ -136,15 +136,16 @@ impl<T: Transport> Stream for Listener<T> {
 }
 
 #[must_use = "futures do nothing unless polled"]
-pub struct ListenerUpgrade<T: Transport>(RateLimited<T::ListenerUpgrade>);
+pub struct ListenerUpgrade<T: transport::Listener>(RateLimited<T::Upgrade>);
 
 impl<T> Future for ListenerUpgrade<T>
 where
-    T: Transport + 'static,
+    T: transport::Listener + 'static,
+    T::Error: From<io::Error>,
     T::Output: AsyncRead + AsyncWrite,
 {
     type Item = Connection<T::Output>;
-    type Error = io::Error;
+    type Error = T::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let conn = try_ready!(self.0.value.poll());
@@ -154,35 +155,18 @@ where
     }
 }
 
-impl<T> Transport for RateLimited<T>
+impl<T> transport::Dialer for RateLimited<T>
 where
-    T: Transport + 'static,
-    T::Dial: Send,
+    T: transport::Dialer + 'static,
+    T::Outbound: Send,
+    T::Error: From<io::Error> + Send,
     T::Output: AsyncRead + AsyncWrite + Send,
 {
     type Output = Connection<T::Output>;
-    type Listener = Listener<T>;
-    type ListenerUpgrade = ListenerUpgrade<T>;
-    type Dial = Box<Future<Item = Connection<T::Output>, Error = io::Error> + Send>;
+    type Error = T::Error;
+    type Outbound = Box<Future<Item = Connection<T::Output>, Error = Self::Error> + Send>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)>
-    where
-        Self: Sized,
-    {
-        let r = self.rlimiter;
-        let w = self.wlimiter;
-        self.value
-            .listen_on(addr)
-            .map(|(listener, a)| {
-                (
-                    Listener(RateLimited::from_parts(listener, r.clone(), w.clone())),
-                    a,
-                )
-            })
-            .map_err(|(transport, a)| (RateLimited::from_parts(transport, r, w), a))
-    }
-
-    fn dial(self, addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)>
+    fn dial(self, addr: Multiaddr) -> Result<Self::Outbound, (Self, Multiaddr)>
     where
         Self: Sized,
     {
@@ -199,6 +183,35 @@ where
                 Box::new(future) as Box<_>
             })
             .map_err(|(transport, a)| (RateLimited::from_parts(transport, r2, w2), a))
+    }
+}
+
+impl<T> transport::Listener for RateLimited<T>
+where
+    T: transport::Listener + 'static,
+    T::Error: From<io::Error>,
+    T::Output: AsyncRead + AsyncWrite + Send
+{
+    type Output = Connection<T::Output>;
+    type Error = T::Error;
+    type Inbound = Listener<T>;
+    type Upgrade = ListenerUpgrade<T>;
+
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Inbound, Multiaddr), (Self, Multiaddr)>
+    where
+        Self: Sized,
+    {
+        let r = self.rlimiter;
+        let w = self.wlimiter;
+        self.value
+            .listen_on(addr)
+            .map(|(listener, a)| {
+                (
+                    Listener(RateLimited::from_parts(listener, r.clone(), w.clone())),
+                    a,
+                )
+            })
+            .map_err(|(transport, a)| (RateLimited::from_parts(transport, r, w), a))
     }
 
     fn nat_traversal(&self, server: &Multiaddr, observed: &Multiaddr) -> Option<Multiaddr> {
