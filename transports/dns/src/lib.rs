@@ -34,7 +34,7 @@
 //!
 
 extern crate futures;
-extern crate libp2p_core as swarm;
+extern crate libp2p_core;
 #[macro_use]
 extern crate log;
 extern crate multiaddr;
@@ -47,7 +47,7 @@ use multiaddr::{Protocol, Multiaddr};
 use std::fmt;
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 use std::net::IpAddr;
-use swarm::Transport;
+use libp2p_core::prelude::*;
 use tokio_dns::{CpuPoolResolver, Resolver};
 
 /// Represents the configuration for a DNS transport capability of libp2p.
@@ -92,31 +92,17 @@ where
     }
 }
 
-impl<T> Transport for DnsConfig<T>
+impl<T> Dialer for DnsConfig<T>
 where
-    T: Transport + Send + 'static, // TODO: 'static :-/
-    T::Dial: Send,
+    T: Dialer + Send + 'static, // TODO: 'static :-/
+    T::Error: From<IoError>,
+    T::Outbound: Send,
 {
     type Output = T::Output;
-    type Listener = T::Listener;
-    type ListenerUpgrade = T::ListenerUpgrade;
-    type Dial = Box<Future<Item = Self::Output, Error = IoError> + Send>;
+    type Error = T::Error;
+    type Outbound = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
 
-    #[inline]
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
-        match self.inner.listen_on(addr) {
-            Ok(r) => Ok(r),
-            Err((inner, addr)) => Err((
-                DnsConfig {
-                    inner,
-                    resolver: self.resolver,
-                },
-                addr,
-            )),
-        }
-    }
-
-    fn dial(self, addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
+    fn dial(self, addr: Multiaddr) -> Result<Self::Outbound, (Self, Multiaddr)> {
         let contains_dns = addr.iter().any(|cmp| match cmp {
             Protocol::Dns4(_) => true,
             Protocol::Dns6(_) => true,
@@ -125,7 +111,7 @@ where
 
         if !contains_dns {
             trace!("Pass-through address without DNS: {}", addr);
-            return match self.inner.dial(addr) {
+            return match self.inner.dial(addr).map_err(From::from) {
                 Ok(d) => Ok(Box::new(d) as Box<_>),
                 Err((inner, addr)) => Err((
                     DnsConfig {
@@ -169,13 +155,6 @@ where
             .flatten();
 
         Ok(Box::new(future) as Box<_>)
-    }
-
-    #[inline]
-    fn nat_traversal(&self, server: &Multiaddr, observed: &Multiaddr) -> Option<Multiaddr> {
-        // Since `listen_on` doesn't perform any resolution, we just pass through `nat_traversal`
-        // as well.
-        self.inner.nat_traversal(server, observed)
     }
 }
 
@@ -226,30 +205,20 @@ mod tests {
     extern crate libp2p_tcp_transport;
     use self::libp2p_tcp_transport::TcpConfig;
     use futures::future;
-    use swarm::Transport;
+    use libp2p_core::prelude::*;
     use multiaddr::{Protocol, Multiaddr};
-    use std::io::Error as IoError;
     use DnsConfig;
 
     #[test]
     fn basic_resolve() {
         #[derive(Clone)]
         struct CustomTransport;
-        impl Transport for CustomTransport {
-            type Output = <TcpConfig as Transport>::Output;
-            type Listener = <TcpConfig as Transport>::Listener;
-            type ListenerUpgrade = <TcpConfig as Transport>::ListenerUpgrade;
-            type Dial = future::Empty<Self::Output, IoError>;
+        impl Dialer for CustomTransport {
+            type Output = <TcpConfig as Dialer>::Output;
+            type Error = <TcpConfig as Dialer>::Error;
+            type Outbound = future::Empty<Self::Output, Self::Error>;
 
-            #[inline]
-            fn listen_on(
-                self,
-                _addr: Multiaddr,
-            ) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
-                unreachable!()
-            }
-
-            fn dial(self, addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
+            fn dial(self, addr: Multiaddr) -> Result<Self::Outbound, (Self, Multiaddr)> {
                 let addr = addr.iter().collect::<Vec<_>>();
                 assert_eq!(addr.len(), 2);
                 match addr[1] {
@@ -262,11 +231,6 @@ mod tests {
                     _ => panic!(),
                 };
                 Ok(future::empty())
-            }
-
-            #[inline]
-            fn nat_traversal(&self, _: &Multiaddr, _: &Multiaddr) -> Option<Multiaddr> {
-                panic!()
             }
         }
 
