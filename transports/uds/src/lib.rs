@@ -65,7 +65,7 @@ use futures::stream::Stream;
 use multiaddr::{Protocol, Multiaddr};
 use std::io::Error as IoError;
 use std::path::PathBuf;
-use libp2p_core::Transport;
+use libp2p_core::prelude::*;
 use tokio_uds::{UnixListener, UnixStream};
 
 /// Represents the configuration for a Unix domain sockets transport capability for libp2p.
@@ -84,13 +84,29 @@ impl UdsConfig {
     }
 }
 
-impl Transport for UdsConfig {
+impl Dialer for UdsConfig {
     type Output = UnixStream;
-    type Listener = Box<Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = IoError> + Send + Sync>;
-    type ListenerUpgrade = FutureResult<Self::Output, IoError>;
-    type Dial = Box<Future<Item = UnixStream, Error = IoError> + Send + Sync>;  // TODO: name this type
+    type Error = IoError;
+    type Outbound = Box<Future<Item = UnixStream, Error = Self::Error> + Send + Sync>;  // TODO: name this type
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn dial(self, addr: Multiaddr) -> Result<Self::Outbound, (Self, Multiaddr)> {
+        if let Ok(path) = multiaddr_to_path(&addr) {
+            debug!("Dialing {}", addr);
+            let fut = UnixStream::connect(&path);
+            Ok(Box::new(fut) as Box<_>)
+        } else {
+            Err((self, addr))
+        }
+    }
+}
+
+impl Listener for UdsConfig {
+    type Output = UnixStream;
+    type Error = IoError;
+    type Inbound = Box<Stream<Item = (Self::Upgrade, Multiaddr), Error = IoError> + Send + Sync>;
+    type Upgrade = FutureResult<Self::Output, Self::Error>;
+
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Inbound, Multiaddr), (Self, Multiaddr)> {
         if let Ok(path) = multiaddr_to_path(&addr) {
             let listener = UnixListener::bind(&path);
             // We need to build the `Multiaddr` to return from this function. If an error happened,
@@ -113,16 +129,6 @@ impl Transport for UdsConfig {
                 })
                 .flatten_stream();
             Ok((Box::new(future), new_addr))
-        } else {
-            Err((self, addr))
-        }
-    }
-
-    fn dial(self, addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
-        if let Ok(path) = multiaddr_to_path(&addr) {
-            debug!("Dialing {}", addr);
-            let fut = UnixStream::connect(&path);
-            Ok(Box::new(fut) as Box<_>)
         } else {
             Err((self, addr))
         }
@@ -170,7 +176,7 @@ mod tests {
     use futures::Future;
     use multiaddr::{Protocol, Multiaddr};
     use std::{self, borrow::Cow, path::Path};
-    use libp2p_core::Transport;
+    use libp2p_core::prelude::*;
     use tempfile;
     use tokio_io;
 
