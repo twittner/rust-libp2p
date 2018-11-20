@@ -45,7 +45,7 @@
 //! Example:
 //!
 //! ```rust
-//! use libp2p::{Multiaddr, Transport, tcp::TcpConfig};
+//! use libp2p::{Dialer, Multiaddr, tcp::TcpConfig};
 //! let tcp_transport = TcpConfig::new();
 //! let addr: Multiaddr = "/ip4/98.97.96.95/tcp/20500".parse().expect("invalid multiaddr");
 //! let _outgoing_connec = tcp_transport.dial(addr);
@@ -59,8 +59,8 @@
 //! Example:
 //!
 //! ```rust
-//! use libp2p::CommonTransport;
-//! let _transport = CommonTransport::new();
+//! use libp2p::common_transport;
+//! let _transport = common_transport();
 //! // _transport.dial(...);
 //! ```
 //!
@@ -90,10 +90,10 @@
 //!
 //! ```rust
 //! # #[cfg(all(not(target_os = "emscripten"), feature = "libp2p-secio"))] {
-//! use libp2p::{Transport, tcp::TcpConfig, secio::{SecioConfig, SecioKeyPair}};
+//! use libp2p::{DialerExt, tcp::TcpConfig, secio::{SecioConfig, SecioKeyPair}};
 //! let tcp_transport = TcpConfig::new();
 //! let secio_upgrade = SecioConfig::new(SecioKeyPair::ed25519_generated().unwrap());
-//! let with_security = tcp_transport.with_upgrade(secio_upgrade);
+//! let with_security = tcp_transport.with_dialer_upgrade(secio_upgrade);
 //! // let _ = with_security.dial(...);
 //! // `with_security` also implements the `Transport` trait, and all the connections opened
 //! // through it will automatically negotiate the `secio` protocol.

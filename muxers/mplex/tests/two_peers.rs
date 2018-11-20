@@ -30,7 +30,7 @@ use futures::future::Future;
 use futures::{Sink, Stream};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use swarm::{muxing, Transport};
+use swarm::prelude::*;
 use tcp::TcpConfig;
 use tokio_io::codec::length_delimited::Framed;
 use tokio::runtime::current_thread::Runtime;
@@ -43,7 +43,7 @@ fn client_to_server_outbound() {
 
     let bg_thread = thread::spawn(move || {
         let transport =
-            TcpConfig::new().with_upgrade(multiplex::MplexConfig::new());
+            TcpConfig::new().with_listener_upgrade(multiplex::MplexConfig::new());
 
         let (listener, addr) = transport
             .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
@@ -52,10 +52,14 @@ fn client_to_server_outbound() {
 
         let future = listener
             .into_future()
-            .map_err(|(err, _)| err)
+            .map_err(|(err, _)| TransportError::Transport(err))
             .and_then(|(client, _)| client.unwrap().0)
-            .and_then(|client| muxing::outbound_from_ref_and_wrap(Arc::new(client)))
-            .map(|client| Framed::<_, bytes::BytesMut>::new(client.unwrap()))
+            .and_then(|client| {
+                  muxing::outbound_from_ref_and_wrap(Arc::new(client)).map_err(TransportError::Transport)
+            })
+            .map(|client| {
+                Framed::<_, bytes::BytesMut>::new(client.unwrap()).map_err(TransportError::Transport)
+            })
             .and_then(|client| {
                 client
                     .into_future()
@@ -72,14 +76,16 @@ fn client_to_server_outbound() {
         let _ = rt.block_on(future).unwrap();
     });
 
-    let transport = TcpConfig::new().with_upgrade(multiplex::MplexConfig::new());
+    let transport = TcpConfig::new().with_dialer_upgrade(multiplex::MplexConfig::new());
 
     let future = transport
         .dial(rx.recv().unwrap())
         .unwrap()
-        .and_then(|client| muxing::inbound_from_ref_and_wrap(Arc::new(client)))
+        .and_then(|client| {
+            muxing::inbound_from_ref_and_wrap(Arc::new(client)).map_err(TransportError::Transport)
+        })
         .map(|server| Framed::<_, bytes::BytesMut>::new(server.unwrap()))
-        .and_then(|server| server.send("hello world".into()))
+        .and_then(|server| server.send("hello world".into()).map_err(TransportError::Transport))
         .map(|_| ());
 
     let mut rt = Runtime::new().unwrap();
@@ -95,7 +101,7 @@ fn client_to_server_inbound() {
 
     let bg_thread = thread::spawn(move || {
         let transport =
-            TcpConfig::new().with_upgrade(multiplex::MplexConfig::new());
+            TcpConfig::new().with_listener_upgrade(multiplex::MplexConfig::new());
 
         let (listener, addr) = transport
             .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
@@ -104,10 +110,14 @@ fn client_to_server_inbound() {
 
         let future = listener
             .into_future()
-            .map_err(|(err, _)| err)
+            .map_err(|(err, _)| TransportError::Transport(err))
             .and_then(|(client, _)| client.unwrap().0)
-            .and_then(|client| muxing::inbound_from_ref_and_wrap(Arc::new(client)))
-            .map(|client| Framed::<_, bytes::BytesMut>::new(client.unwrap()))
+            .and_then(|client| {
+                muxing::inbound_from_ref_and_wrap(Arc::new(client)).map_err(TransportError::Transport)
+            })
+            .map(|client| {
+                Framed::<_, bytes::BytesMut>::new(client.unwrap()).map_err(TransportError::Transport)
+            })
             .and_then(|client| {
                 client
                     .into_future()
@@ -124,14 +134,16 @@ fn client_to_server_inbound() {
         let _ = rt.block_on(future).unwrap();
     });
 
-    let transport = TcpConfig::new().with_upgrade(multiplex::MplexConfig::new());
+    let transport = TcpConfig::new().with_dialer_upgrade(multiplex::MplexConfig::new());
 
     let future = transport
         .dial(rx.recv().unwrap())
         .unwrap()
-        .and_then(|client| muxing::outbound_from_ref_and_wrap(Arc::new(client)))
+        .and_then(|client| {
+            muxing::outbound_from_ref_and_wrap(Arc::new(client)).map_err(TransportError::Transport)
+        })
         .map(|server| Framed::<_, bytes::BytesMut>::new(server.unwrap()))
-        .and_then(|server| server.send("hello world".into()))
+        .and_then(|server| server.send("hello world".into()).map_err(TransportError::Transport))
         .map(|_| ());
 
     let mut rt = Runtime::new().unwrap();

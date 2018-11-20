@@ -28,7 +28,7 @@ use futures::{
     stream,
 };
 use std::io;
-use {Multiaddr, Transport};
+use {Multiaddr, Listener};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub(crate) enum ListenerState {
@@ -51,17 +51,13 @@ impl DummyTransport {
         self.listener_state = state;
     }
 }
-impl Transport for DummyTransport {
+impl Listener for DummyTransport {
     type Output = usize;
-    type Listener =
-        Box<Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = io::Error> + Send>;
-    type ListenerUpgrade = FutureResult<Self::Output, io::Error>;
-    type Dial = Box<Future<Item = Self::Output, Error = io::Error> + Send>;
+    type Error = io::Error;
+    type Inbound = Box<Stream<Item = (Self::Upgrade, Multiaddr), Error = io::Error> + Send>;
+    type Upgrade = FutureResult<Self::Output, Self::Error>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)>
-    where
-        Self: Sized,
-    {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Inbound, Multiaddr), (Self, Multiaddr)> {
         let addr2 = addr.clone();
         match self.listener_state {
             ListenerState::Ok(async) => {
@@ -83,13 +79,6 @@ impl Transport for DummyTransport {
             }
             ListenerState::Error => Err((self, addr2)),
         }
-    }
-
-    fn dial(self, _addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)>
-    where
-        Self: Sized,
-    {
-        unimplemented!();
     }
 
     fn nat_traversal(&self, _server: &Multiaddr, _observed: &Multiaddr) -> Option<Multiaddr> {

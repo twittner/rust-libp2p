@@ -432,7 +432,7 @@ mod tests {
 
     use self::libp2p_tcp_transport::TcpConfig;
     use futures::{Future, Sink, Stream};
-    use libp2p_core::{Transport, PeerId, PublicKey};
+    use libp2p_core::prelude::*;
     use multihash::{encode, Hash};
     use protocol::{KadConnectionType, KadMsg, KademliaProtocolConfig, KadPeer};
     use std::sync::mpsc;
@@ -499,7 +499,7 @@ mod tests {
             let (tx, rx) = mpsc::channel();
 
             let bg_thread = thread::spawn(move || {
-                let transport = TcpConfig::new().with_upgrade(KademliaProtocolConfig);
+                let transport = TcpConfig::new().with_listener_upgrade(KademliaProtocolConfig);
 
                 let (listener, addr) = transport
                     .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
@@ -509,9 +509,13 @@ mod tests {
 
                 let future = listener
                     .into_future()
-                    .map_err(|(err, _)| err)
+                    .map_err(|(err, _)| TransportError::Transport(err))
                     .and_then(|(client, _)| client.unwrap().0)
-                    .and_then(|proto| proto.into_future().map_err(|(err, _)| err).map(|(v, _)| v))
+                    .and_then(|proto| {
+                        proto.into_future()
+                            .map_err(|(err, _)| TransportError::Transport(err))
+                            .map(|(v, _)| v)
+                    })
                     .map(|recv_msg| {
                         assert_eq!(recv_msg.unwrap(), msg_server);
                         ()
@@ -520,12 +524,12 @@ mod tests {
                 let _ = rt.block_on(future).unwrap();
             });
 
-            let transport = TcpConfig::new().with_upgrade(KademliaProtocolConfig);
+            let transport = TcpConfig::new().with_dialer_upgrade(KademliaProtocolConfig);
 
             let future = transport
                 .dial(rx.recv().unwrap())
                 .unwrap_or_else(|_| panic!())
-                .and_then(|proto| proto.send(msg_client))
+                .and_then(|proto| proto.send(msg_client).map_err(TransportError::Transport))
                 .map(|_| ());
             let mut rt = Runtime::new().unwrap();
             let _ = rt.block_on(future).unwrap();

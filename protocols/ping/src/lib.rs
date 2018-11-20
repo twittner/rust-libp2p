@@ -56,21 +56,19 @@
 //! extern crate tokio;
 //!
 //! use futures::{Future, Stream};
-//! use libp2p_core::{transport::Transport, upgrade::apply_outbound};
+//! use libp2p_core::prelude::*;
 //! use libp2p_ping::protocol::Ping;
 //! use tokio::runtime::current_thread::Runtime;
 //!
 //! # fn main() {
 //! let ping_dialer = libp2p_tcp_transport::TcpConfig::new()
-//!     .and_then(|socket, _| {
-//!         apply_outbound(socket, Ping::default()).map_err(|e| e.into_io_error())
-//!     })
+//!     .with_dialer_upgrade(Ping::default())
 //!     .dial("/ip4/127.0.0.1/tcp/12345".parse::<libp2p_core::Multiaddr>().unwrap()).unwrap_or_else(|_| panic!())
 //!     .and_then(|mut pinger| {
 //!         pinger.ping(());
 //!         let f = pinger.into_future()
 //!             .map(|_| println!("received pong"))
-//!             .map_err(|(e, _)| e);
+//!             .map_err(|(e, _)| TransportError::Transport(e));
 //!         Box::new(f) as Box<Future<Item = _, Error = _> + Send>
 //!     });
 //!

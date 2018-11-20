@@ -277,7 +277,7 @@ mod tests {
     extern crate libp2p_tcp_transport;
 
     use super::*;
-    use transport;
+    use transport::{memory, Dialer};
     use tokio::runtime::current_thread::Runtime;
     use std::io;
     use futures::{future::{self}, stream};
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn incoming_event() {
-        let (tx, rx) = transport::connector();
+        let (tx, rx) = memory::connector();
 
         let mut listeners = ListenersStream::new(rx);
         listeners.listen_on("/memory".parse().unwrap()).unwrap();

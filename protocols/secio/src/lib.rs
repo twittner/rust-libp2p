@@ -39,14 +39,13 @@
 //! # fn main() {
 //! use futures::Future;
 //! use libp2p_secio::{SecioConfig, SecioKeyPair, SecioOutput};
-//! use libp2p_core::{Multiaddr, upgrade::apply_inbound};
-//! use libp2p_core::transport::Transport;
+//! use libp2p_core::prelude::*;
 //! use libp2p_tcp_transport::TcpConfig;
 //! use tokio_io::io::write_all;
 //! use tokio::runtime::current_thread::Runtime;
 //!
 //! let dialer = TcpConfig::new()
-//!     .with_upgrade({
+//!     .with_dialer_upgrade({
 //!         # let private_key = b"";
 //!         //let private_key = include_bytes!("test-rsa-private-key.pk8");
 //!         # let public_key = vec![];
@@ -55,13 +54,13 @@
 //!         let keypair = SecioKeyPair::rsa_from_pkcs8(private_key, public_key).unwrap();
 //!         SecioConfig::new(keypair)
 //!     })
-//!     .map(|out: SecioOutput<_>, _| out.stream);
+//!     .map_dialer(|out: SecioOutput<_>, _| out.stream);
 //!
 //! let future = dialer.dial("/ip4/127.0.0.1/tcp/12345".parse::<Multiaddr>().unwrap())
 //!     .unwrap_or_else(|_| panic!("Unable to dial node"))
 //!     .and_then(|connection| {
 //!         // Sends "hello world" on the connection, will be encrypted.
-//!         write_all(connection, "hello world")
+//!         write_all(connection, "hello world").map_err(TransportError::Transport)
 //!     })
 //!     .map_err(|e| panic!("error: {:?}", e));
 //!
