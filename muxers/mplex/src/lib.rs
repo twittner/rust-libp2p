@@ -37,7 +37,6 @@ use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 use std::sync::{atomic::AtomicUsize, atomic::Ordering, Arc};
 use bytes::Bytes;
 use core::{
-    Endpoint,
     StreamMuxer,
     muxing::Shutdown,
     upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo}
@@ -50,7 +49,7 @@ use tokio_codec::Framed;
 use tokio_io::{AsyncRead, AsyncWrite};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-enum Endpoint {
+pub enum Endpoint {
     /// The socket comes from a dialer.
     Dialer,
     /// The socket comes from a listener.
