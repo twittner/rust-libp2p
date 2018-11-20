@@ -19,10 +19,10 @@
 // DEALINGS IN THE SOFTWARE.
 
 use futures::{stream, Future, IntoFuture, Sink, Stream};
+use libp2p_core::prelude::*;
 use multiaddr::{Protocol, Multiaddr};
 use rw_stream_sink::RwStreamSink;
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
-use swarm::Transport;
 use tokio_io::{AsyncRead, AsyncWrite};
 use websocket::client::builder::ClientBuilder;
 use websocket::message::OwnedMessage;
@@ -55,26 +55,102 @@ impl<T> WsConfig<T> {
     }
 }
 
-impl<T> Transport for WsConfig<T>
+impl<T> Dialer for WsConfig<T>
 where
     // TODO: this 'static is pretty arbitrary and is necessary because of the websocket library
-    T: Transport + 'static,
-    T::Dial: Send,
-    T::Listener: Send,
-    T::ListenerUpgrade: Send,
-    // TODO: this Send is pretty arbitrary and is necessary because of the websocket library
+    T: Dialer + 'static,
+    T::Outbound: Send,
+    T::Error: From<IoError>,
     T::Output: AsyncRead + AsyncWrite + Send,
 {
     type Output = Box<AsyncStream + Send>;
-    type Listener =
-        stream::Map<T::Listener, fn((<T as Transport>::ListenerUpgrade, Multiaddr)) -> (Self::ListenerUpgrade, Multiaddr)>;
-    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = IoError> + Send>;
-    type Dial = Box<Future<Item = Self::Output, Error = IoError> + Send>;
+    type Error = T::Error;
+    type Outbound = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
 
-    fn listen_on(
-        self,
-        original_addr: Multiaddr,
-    ) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn dial(self, original_addr: Multiaddr) -> Result<Self::Outbound, (Self, Multiaddr)> {
+        let mut inner_addr = original_addr.clone();
+        let is_wss = match inner_addr.pop() {
+            Some(Protocol::Ws) => false,
+            Some(Protocol::Wss) => true,
+            _ => {
+                trace!(
+                    "Ignoring dial attempt for {} because it is not a websocket multiaddr",
+                    original_addr
+                );
+                return Err((self, original_addr));
+            }
+        };
+
+        debug!("Dialing {} through inner transport", inner_addr);
+
+        let ws_addr = client_addr_to_ws(&inner_addr, is_wss);
+
+        let inner_dial = match self.transport.dial(inner_addr) {
+            Ok(d) => d,
+            Err((transport, old_addr)) => {
+                debug!(
+                    "Failed to dial {} because {} is not supported by the underlying transport",
+                    original_addr, old_addr
+                );
+                return Err((
+                    WsConfig {
+                        transport: transport,
+                    },
+                    original_addr,
+                ));
+            }
+        };
+
+        let dial = inner_dial
+            .into_future()
+            .and_then(move |connec| {
+                ClientBuilder::new(&ws_addr)
+                    .expect("generated ws address is always valid")
+                    .async_connect_on(connec)
+                    .map_err(|err| IoError::new(IoErrorKind::Other, err).into())
+                    .map(|(client, _)| {
+                        debug!("Upgraded outgoing connection to websockets");
+
+                        // Plug our own API on top of the API of the websockets library.
+                        let framed_data = client
+                            .map_err(|err| IoError::new(IoErrorKind::Other, err))
+                            .sink_map_err(|err| IoError::new(IoErrorKind::Other, err))
+                            .with(|data| Ok(OwnedMessage::Binary(data)))
+                            .and_then(|recv| {
+                                match recv {
+                                    OwnedMessage::Binary(data) => Ok(data),
+                                    OwnedMessage::Text(data) => Ok(data.into_bytes()),
+                                    // TODO: pings and pongs and close messages need to be
+                                    //       answered; and this is really hard; for now we produce
+                                    //         an error when that happens
+                                    _ => Err(IoError::new(IoErrorKind::Other, "unimplemented")),
+                                }
+                            });
+                        let read_write = RwStreamSink::new(framed_data);
+                        Box::new(read_write) as Box<AsyncStream + Send>
+                    })
+            });
+
+        Ok(Box::new(dial) as Box<_>)
+    }
+}
+
+impl<T> Listener for WsConfig<T>
+where
+    // TODO: this 'static is pretty arbitrary and is necessary because of the websocket library
+    T: Listener + 'static,
+    T::Inbound: Send,
+    T::Upgrade: Send,
+    // TODO: this Send is pretty arbitrary and is necessary because of the websocket library
+    T::Output: AsyncRead + AsyncWrite + Send,
+    T::Error: From<IoError> + Send
+{
+    type Output = Box<AsyncStream + Send>;
+    type Error = T::Error;
+    type Inbound = stream::Map<T::Inbound, fn((<T as Listener>::Upgrade, Multiaddr)) -> (Self::Upgrade, Multiaddr)>;
+    type Upgrade = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
+
+    fn listen_on(self, original_addr: Multiaddr) -> Result<(Self::Inbound, Multiaddr), (Self, Multiaddr)> {
         let mut inner_addr = original_addr.clone();
         match inner_addr.pop() {
             Some(Protocol::Ws) => {}
@@ -152,73 +228,6 @@ where
         Ok((listen, new_addr))
     }
 
-    fn dial(self, original_addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
-        let mut inner_addr = original_addr.clone();
-        let is_wss = match inner_addr.pop() {
-            Some(Protocol::Ws) => false,
-            Some(Protocol::Wss) => true,
-            _ => {
-                trace!(
-                    "Ignoring dial attempt for {} because it is not a websocket multiaddr",
-                    original_addr
-                );
-                return Err((self, original_addr));
-            }
-        };
-
-        debug!("Dialing {} through inner transport", inner_addr);
-
-        let ws_addr = client_addr_to_ws(&inner_addr, is_wss);
-
-        let inner_dial = match self.transport.dial(inner_addr) {
-            Ok(d) => d,
-            Err((transport, old_addr)) => {
-                debug!(
-                    "Failed to dial {} because {} is not supported by the underlying transport",
-                    original_addr, old_addr
-                );
-                return Err((
-                    WsConfig {
-                        transport: transport,
-                    },
-                    original_addr,
-                ));
-            }
-        };
-
-        let dial = inner_dial
-            .into_future()
-            .and_then(move |connec| {
-                ClientBuilder::new(&ws_addr)
-                    .expect("generated ws address is always valid")
-                    .async_connect_on(connec)
-                    .map_err(|err| IoError::new(IoErrorKind::Other, err))
-                    .map(|(client, _)| {
-                        debug!("Upgraded outgoing connection to websockets");
-
-                        // Plug our own API on top of the API of the websockets library.
-                        let framed_data = client
-                            .map_err(|err| IoError::new(IoErrorKind::Other, err))
-                            .sink_map_err(|err| IoError::new(IoErrorKind::Other, err))
-                            .with(|data| Ok(OwnedMessage::Binary(data)))
-                            .and_then(|recv| {
-                                match recv {
-                                    OwnedMessage::Binary(data) => Ok(data),
-                                    OwnedMessage::Text(data) => Ok(data.into_bytes()),
-                                    // TODO: pings and pongs and close messages need to be
-                                    //       answered; and this is really hard; for now we produce
-                                    //         an error when that happens
-                                    _ => Err(IoError::new(IoErrorKind::Other, "unimplemented")),
-                                }
-                            });
-                        let read_write = RwStreamSink::new(framed_data);
-                        Box::new(read_write) as Box<AsyncStream + Send>
-                    })
-            });
-
-        Ok(Box::new(dial) as Box<_>)
-    }
-
     fn nat_traversal(&self, server: &Multiaddr, observed: &Multiaddr) -> Option<Multiaddr> {
         self.transport.nat_traversal(server, observed)
     }
@@ -263,7 +272,7 @@ mod tests {
     use self::tokio::runtime::current_thread::Runtime;
     use futures::{Future, Stream};
     use multiaddr::Multiaddr;
-    use swarm::Transport;
+    use libp2p_core::prelude::*;
     use WsConfig;
 
     #[test]
