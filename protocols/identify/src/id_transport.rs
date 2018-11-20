@@ -21,10 +21,7 @@
 //! Contains the `IdentifyTransport` type.
 
 use futures::prelude::*;
-use libp2p_core::{
-    Multiaddr, PeerId, PublicKey, muxing, Transport,
-    upgrade::{self, OutboundUpgradeApply, UpgradeError}
-};
+use libp2p_core::prelude::*;
 use protocol::{RemoteInfo, IdentifyProtocolConfig};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 use std::mem;
@@ -57,28 +54,21 @@ impl<TTrans> IdentifyTransport<TTrans> {
 }
 
 // TODO: don't use boxes
-impl<TTrans, TMuxer> Transport for IdentifyTransport<TTrans>
+impl<TTrans, TMuxer> Dialer for IdentifyTransport<TTrans>
 where
-    TTrans: Transport<Output = TMuxer>,
+    TTrans: Dialer<Output = TMuxer>,
     TMuxer: muxing::StreamMuxer + Send + Sync + 'static,      // TODO: remove unnecessary bounds
     TMuxer::Substream: Send + Sync + 'static,      // TODO: remove unnecessary bounds
     TMuxer::OutboundSubstream: Send + 'static,      // TODO: remove unnecessary bounds
-    TTrans::Dial: Send + Sync + 'static,
-    TTrans::Listener: Send + 'static,
-    TTrans::ListenerUpgrade: Send + 'static,
+    TTrans::Outbound: Send + Sync + 'static,
+    TTrans::Error: 'static
 {
     type Output = (PeerId, TMuxer);
-    type Listener = Box<Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = IoError> + Send>;
-    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = IoError> + Send>;
-    type Dial = Box<Future<Item = Self::Output, Error = IoError> + Send>;
+    type Error = TransportError<TTrans::Error, IoError>;
+    type Outbound = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
 
     #[inline]
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
-        Err((self, addr))
-    }
-
-    #[inline]
-    fn dial(self, addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
+    fn dial(self, addr: Multiaddr) -> Result<Self::Outbound, (Self, Multiaddr)> {
         // We dial a first time the node.
         let dial = match self.transport.dial(addr.clone()) {
             Ok(d) => d,
@@ -90,16 +80,13 @@ where
             }
         };
 
-        let dial = dial.and_then(move |muxer| {
-            IdRetriever::new(muxer, IdentifyProtocolConfig).map_err(|e| e.into_io_error())
-        });
+        let dial = dial
+            .map_err(TransportError::Transport)
+            .and_then(move |muxer| {
+                IdRetriever::new(muxer, IdentifyProtocolConfig).map_err(TransportError::Upgrade)
+            });
 
         Ok(Box::new(dial) as Box<_>)
-    }
-
-    #[inline]
-    fn nat_traversal(&self, a: &Multiaddr, b: &Multiaddr) -> Option<Multiaddr> {
-        self.transport.nat_traversal(a, b)
     }
 }
 

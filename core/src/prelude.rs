@@ -21,7 +21,7 @@
 pub use multiaddr::Multiaddr;
 
 pub use crate::{
-    muxing::StreamMuxer,
+    muxing::{self, StreamMuxer},
     nodes::{
         raw_swarm::ConnectedPoint,
         swarm::{Swarm, NetworkBehaviour, NetworkBehaviourAction}
@@ -30,5 +30,13 @@ pub use crate::{
     protocols_handler::{ProtocolsHandler, ProtocolsHandlerEvent},
     public_key::PublicKey,
     transport::{Dialer, DialerExt, Listener, ListenerExt, TransportError},
-    upgrade::{self, InboundUpgrade, OutboundUpgrade, UpgradeInfo, UpgradeError},
+    upgrade::{
+        self,
+        InboundUpgrade,
+        OutboundUpgrade,
+        UpgradeInfo,
+        UpgradeError,
+        InboundUpgradeApply,
+        OutboundUpgradeApply
+    }
 };

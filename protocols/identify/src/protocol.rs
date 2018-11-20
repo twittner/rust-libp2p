@@ -262,7 +262,7 @@ mod tests {
     use self::tokio::runtime::current_thread::Runtime;
     use self::libp2p_tcp_transport::TcpConfig;
     use futures::{Future, Stream};
-    use libp2p_core::{PublicKey, Transport, upgrade::{apply_outbound, apply_inbound}};
+    use libp2p_core::prelude::*;
     use std::sync::mpsc;
     use std::thread;
     use {IdentifyInfo, RemoteInfo, IdentifyProtocolConfig};
@@ -288,7 +288,7 @@ mod tests {
                 .map_err(|(err, _)| err)
                 .and_then(|(client, _)| client.unwrap().0)
                 .and_then(|socket| {
-                    apply_inbound(socket, IdentifyProtocolConfig).map_err(|e| e.into_io_error())
+                    upgrade::apply_inbound(socket, IdentifyProtocolConfig).map_err(|e| e.into_io_error())
                 })
                 .and_then(|sender| {
                     sender.send(
@@ -315,7 +315,7 @@ mod tests {
         let future = transport.dial(rx.recv().unwrap())
             .unwrap_or_else(|_| panic!())
             .and_then(|socket| {
-                apply_outbound(socket, IdentifyProtocolConfig).map_err(|e| e.into_io_error())
+                upgrade::apply_outbound(socket, IdentifyProtocolConfig).map_err(|e| e.into_io_error())
             })
             .and_then(|RemoteInfo { info, observed_addr, .. }| {
                 assert_eq!(observed_addr, "/ip4/100.101.102.103/tcp/5000".parse().unwrap());
