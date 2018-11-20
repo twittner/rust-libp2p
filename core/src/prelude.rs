@@ -43,7 +43,9 @@ pub use crate::{
     upgrade::{
         self,
         InboundUpgrade,
+        InboundUpgradeExt,
         OutboundUpgrade,
+        OutboundUpgradeExt,
         UpgradeInfo,
         UpgradeError,
         InboundUpgradeApply,

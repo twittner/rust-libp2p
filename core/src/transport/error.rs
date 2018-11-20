@@ -29,6 +29,16 @@ pub enum TransportError<T, U> {
     __Nonexhaustive
 }
 
+impl<T, U> TransportError<T, U>
+where
+    T: std::error::Error + Send + Sync + 'static,
+    U: std::error::Error + Send + Sync + 'static
+{
+    pub fn into_io_error(self) -> std::io::Error {
+        std::io::Error::new(std::io::ErrorKind::Other, self)
+    }
+}
+
 impl<T, U> TransportError<T, U> {
     pub fn map_transport_err<F, E>(self, f: F) -> TransportError<E, U>
     where
