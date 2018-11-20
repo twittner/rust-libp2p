@@ -26,10 +26,7 @@ use crate::{
     utility::{io_err, is_success, status, Io, Peer}
 };
 use futures::{stream, future::{self, Either::{A, B}, FutureResult}, prelude::*};
-use libp2p_core::{
-    transport::Transport,
-    upgrade::{apply_outbound, InboundUpgrade, OutboundUpgrade, UpgradeInfo}
-};
+use libp2p_core::prelude::*;
 use log::debug;
 use peerstore::{PeerAccess, PeerId, Peerstore};
 use std::{io, iter, ops::Deref};
@@ -69,17 +66,16 @@ impl<T, P> UpgradeInfo for RelayConfig<T, P> {
 impl<C, T, P, S> InboundUpgrade<C> for RelayConfig<T, P>
 where
     C: AsyncRead + AsyncWrite + Send + 'static,
-    T: Transport + Clone + Send + 'static,
-    T::Dial: Send,
-    T::Listener: Send,
-    T::ListenerUpgrade: Send,
+    T: Dialer + Clone + Send + 'static,
+    T::Outbound: Send,
     T::Output: AsyncRead + AsyncWrite + Send,
+    T::Error: Send,
     P: Deref<Target=S> + Clone + Send + 'static,
     S: 'static,
     for<'a> &'a S: Peerstore
 {
     type Output = Output<C>;
-    type Error = RelayError<Void>;
+    type Error = RelayError<T::Error, Void>;
     type Future = Box<Future<Item=Self::Output, Error=Self::Error> + Send>;
 
     fn upgrade_inbound(self, conn: C, _: ()) -> Self::Future {
@@ -109,10 +105,8 @@ where
 
 impl<T, P, S> RelayConfig<T, P>
 where
-    T: Transport + Clone + 'static,
-    T::Dial: Send,      // TODO: remove
-    T::Listener: Send,      // TODO: remove
-    T::ListenerUpgrade: Send,      // TODO: remove
+    T: Dialer + Clone + 'static,
+    T::Outbound: Send,      // TODO: remove
     T::Output: Send + AsyncRead + AsyncWrite,
     P: Deref<Target = S> + Clone + 'static,
     for<'a> &'a S: Peerstore,
@@ -126,7 +120,7 @@ where
     }
 
     // HOP message handling (relay mode).
-    fn on_hop<C>(self, mut msg: CircuitRelay, io: Io<C>) -> impl Future<Item=impl Future<Item=(), Error=io::Error>, Error=RelayError<Void>>
+    fn on_hop<C>(self, mut msg: CircuitRelay, io: Io<C>) -> impl Future<Item=impl Future<Item=(), Error=io::Error>, Error=RelayError<T::Error, Void>>
     where
         C: AsyncRead + AsyncWrite + 'static,
     {
@@ -153,12 +147,12 @@ where
 
         let stop = stop_message(&from, &dest);
 
-        let dialer = self.dialer;
+        let dialer = self.dialer.with_dialer_upgrade(TrivialUpgrade);
         let future = stream::iter_ok(dest.addrs.into_iter())
             .and_then(move |dest_addr| {
                 dialer.clone().dial(dest_addr).map_err(|_| RelayError::Message("could no dial addr"))
             })
-            .and_then(|outbound| outbound.from_err().and_then(|c| apply_outbound(c, TrivialUpgrade).from_err()))
+            .and_then(|outbound| outbound.from_err())
             .then(|result| Ok(result.ok()))
             .filter_map(|result| result)
             .into_future()

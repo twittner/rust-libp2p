@@ -39,4 +39,4 @@ mod transport;
 mod utility;
 
 pub use protocol::{Output, RelayConfig};
-pub use transport::RelayTransport;
+pub use transport::RelayDialer;

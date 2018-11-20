@@ -30,5 +30,5 @@ pub use crate::{
     protocols_handler::{ProtocolsHandler, ProtocolsHandlerEvent},
     public_key::PublicKey,
     transport::{Dialer, DialerExt, Listener, ListenerExt, TransportError},
-    upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo, UpgradeError},
+    upgrade::{self, InboundUpgrade, OutboundUpgrade, UpgradeInfo, UpgradeError},
 };
