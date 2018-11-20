@@ -160,103 +160,50 @@ pub extern crate libp2p_uds as uds;
 pub extern crate libp2p_websocket as websocket;
 pub extern crate libp2p_yamux as yamux;
 
+mod builder;
 mod transport_ext;
-
 pub mod simple;
 
-pub use self::core::{
-    Transport, PeerId,
-    upgrade::{InboundUpgrade, InboundUpgradeExt, OutboundUpgrade, OutboundUpgradeExt}
-};
+pub use self::core::prelude::*;
 pub use libp2p_core_derive::NetworkBehaviour;
+pub use self::builder::Transport;
 pub use self::multiaddr::Multiaddr;
 pub use self::simple::SimpleProtocol;
-pub use self::transport_ext::TransportExt;
+pub use self::transport_ext::{DialerExtra, ListenerExtra};
 pub use self::transport_timeout::TransportTimeout;
 
-/// Implementation of `Transport` that supports the most common protocols.
-///
-/// The list currently is TCP/IP, DNS, and WebSockets. However this list could change in the
-/// future to get new transports.
-#[derive(Debug, Clone)]
-pub struct CommonTransport {
-    // The actual implementation of everything.
-    inner: CommonTransportInner
-}
-
 #[cfg(all(not(target_os = "emscripten"), feature = "libp2p-websocket"))]
-pub type InnerImplementation = core::transport::OrTransport<dns::DnsConfig<tcp::TcpConfig>, websocket::WsConfig<dns::DnsConfig<tcp::TcpConfig>>>;
+pub type CommonTransport =
+    Transport<
+        Or<dns::DnsConfig<tcp::TcpConfig>, websocket::WsConfig<dns::DnsConfig<tcp::TcpConfig>>>,
+        Or<tcp::TcpConfig, websocket::WsConfig<tcp::TcpConfig>>
+    >;
 #[cfg(all(not(target_os = "emscripten"), not(feature = "libp2p-websocket")))]
-pub type InnerImplementation = dns::DnsConfig<tcp::TcpConfig>;
+pub type CommonTransport = Transport<dns::DnsConfig<tcp::TcpConfig>, tcp::TcpConfig>;
 #[cfg(target_os = "emscripten")]
-pub type InnerImplementation = websocket::BrowserWsConfig;
+pub type CommonTransport = Transport<websocket::BrowserWsConfig, Denied>;
 
-#[derive(Debug, Clone)]
-struct CommonTransportInner {
-    inner: InnerImplementation,
+#[cfg(not(target_os = "emscripten"))]
+pub fn common_transport() -> CommonTransport {
+    let transport =
+        Transport::dialer(dns::DnsConfig::new(tcp::TcpConfig::new()))
+            .with_listener(tcp::TcpConfig::new());
+
+    #[cfg(feature = "libp2p-websocket")]
+    let transport = transport
+        .replace_dialer(|d| {
+            d.clone().or_dialer(websocket::WsConfig::new(d))
+        })
+        .replace_listener(|l| {
+            l.clone().or_listener(websocket::WsConfig::new(l))
+        });
+
+    transport
 }
 
-impl CommonTransport {
-    /// Initializes the `CommonTransport`.
-    #[inline]
-    #[cfg(not(target_os = "emscripten"))]
-    pub fn new() -> CommonTransport {
-        let transport = tcp::TcpConfig::new();
-        let transport = dns::DnsConfig::new(transport);
-        #[cfg(feature = "libp2p-websocket")]
-        let transport = {
-            let trans_clone = transport.clone();
-            transport.or_transport(websocket::WsConfig::new(trans_clone))
-        };
-
-        CommonTransport {
-            inner: CommonTransportInner { inner: transport }
-        }
-    }
-
-    /// Initializes the `CommonTransport`.
-    #[inline]
-    #[cfg(target_os = "emscripten")]
-    pub fn new() -> CommonTransport {
-        let inner = websocket::BrowserWsConfig::new();
-        CommonTransport {
-            inner: CommonTransportInner { inner: inner }
-        }
-    }
-}
-
-impl Transport for CommonTransport {
-    type Output = <InnerImplementation as Transport>::Output;
-    type Listener = <InnerImplementation as Transport>::Listener;
-    type ListenerUpgrade = <InnerImplementation as Transport>::ListenerUpgrade;
-    type Dial = <InnerImplementation as Transport>::Dial;
-
-    #[inline]
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
-        match self.inner.inner.listen_on(addr) {
-            Ok(res) => Ok(res),
-            Err((inner, addr)) => {
-                let trans = CommonTransport { inner: CommonTransportInner { inner: inner } };
-                Err((trans, addr))
-            }
-        }
-    }
-
-    #[inline]
-    fn dial(self, addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
-        match self.inner.inner.dial(addr) {
-            Ok(res) => Ok(res),
-            Err((inner, addr)) => {
-                let trans = CommonTransport { inner: CommonTransportInner { inner: inner } };
-                Err((trans, addr))
-            }
-        }
-    }
-
-    #[inline]
-    fn nat_traversal(&self, server: &Multiaddr, observed: &Multiaddr) -> Option<Multiaddr> {
-        self.inner.inner.nat_traversal(server, observed)
-    }
+#[cfg(target_os = "emscripten")]
+pub fn common_transport() -> CommonTransport {
+    Transport::dialer(websocket::BrowserWsConfig::new())
 }
 
 /// The `multiaddr!` macro is an easy way for a user to create a `Multiaddr`.

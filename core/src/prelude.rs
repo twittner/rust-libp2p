@@ -29,7 +29,17 @@ pub use crate::{
     peer_id::PeerId,
     protocols_handler::{ProtocolsHandler, ProtocolsHandlerEvent},
     public_key::PublicKey,
-    transport::{Dialer, DialerExt, Listener, ListenerExt, TransportError},
+    transport::{
+        self,
+        Dialer,
+        DialerExt,
+        Listener,
+        ListenerExt,
+        TransportError,
+        Denied,
+        Refused,
+        Or
+    },
     upgrade::{
         self,
         InboundUpgrade,

@@ -25,57 +25,37 @@ use std::io;
 use std::time::Duration;
 use tokio_executor::DefaultExecutor;
 use transport_timeout::TransportTimeout;
-use Transport;
+use crate::{Dialer, Listener};
 
-/// Trait automatically implemented on all objects that implement `Transport`. Provides some
+/// Trait automatically implemented on all objects that implement `Dialer`. Provides some
 /// additional utilities.
 ///
 /// # Example
 ///
 /// ```
-/// use libp2p::TransportExt;
+/// use libp2p::DialerExtra;
 /// use libp2p::tcp::TcpConfig;
 /// use std::time::Duration;
 ///
 /// let _transport = TcpConfig::new()
-///     .with_timeout(Duration::from_secs(20))
-///     .with_rate_limit(1024 * 1024, 1024 * 1024);
+///     .with_dialer_timeout(Duration::from_secs(20))
+///     .with_dialer_rate_limit(1024 * 1024, 1024 * 1024);
 /// ```
 ///
-pub trait TransportExt: Transport {
+pub trait DialerExtra: Dialer {
     /// Adds a timeout to the connection and upgrade steps for all the sockets created by
     /// the transport.
     #[inline]
-    fn with_timeout(self, timeout: Duration) -> TransportTimeout<Self>
+    fn with_dialer_timeout(self, timeout: Duration) -> TransportTimeout<Self>
     where
         Self: Sized,
     {
         TransportTimeout::new(self, timeout)
     }
 
-    /// Adds a timeout to the connection and upgrade steps for all the outgoing sockets created
-    /// by the transport.
-    #[inline]
-    fn with_outbound_timeout(self, timeout: Duration) -> TransportTimeout<Self>
-    where
-        Self: Sized,
-    {
-        TransportTimeout::with_outgoing_timeout(self, timeout)
-    }
-
-    /// Adds a timeout to the connection and upgrade steps for all the incoming sockets created
-    /// by the transport.
-    #[inline]
-    fn with_inbound_timeout(self, timeout: Duration) -> TransportTimeout<Self>
-    where
-        Self: Sized,
-    {
-        TransportTimeout::with_ingoing_timeout(self, timeout)
-    }
-
     /// Adds a maximum transfer rate to the sockets created with the transport.
     #[inline]
-    fn with_rate_limit(
+    fn with_dialer_rate_limit(
         self,
         max_read_bytes_per_sec: usize,
         max_write_bytes_per_sec: usize,
@@ -94,4 +74,52 @@ pub trait TransportExt: Transport {
     // TODO: add methods to easily upgrade for secio/mplex/yamux
 }
 
-impl<TTransport> TransportExt for TTransport where TTransport: Transport {}
+/// Trait automatically implemented on all objects that implement `Listener`. Provides some
+/// additional utilities.
+///
+/// # Example
+///
+/// ```
+/// use libp2p::ListenerExtra;
+/// use libp2p::tcp::TcpConfig;
+/// use std::time::Duration;
+///
+/// let _transport = TcpConfig::new()
+///     .with_listener_timeout(Duration::from_secs(20))
+///     .with_listener_rate_limit(1024 * 1024, 1024 * 1024);
+/// ```
+///
+pub trait ListenerExtra: Listener {
+    /// Adds a timeout to the connection and upgrade steps for all the sockets created by
+    /// the transport.
+    #[inline]
+    fn with_listener_timeout(self, timeout: Duration) -> TransportTimeout<Self>
+    where
+        Self: Sized,
+    {
+        TransportTimeout::new(self, timeout)
+    }
+
+    /// Adds a maximum transfer rate to the sockets created with the transport.
+    #[inline]
+    fn with_listener_rate_limit(
+        self,
+        max_read_bytes_per_sec: usize,
+        max_write_bytes_per_sec: usize,
+    ) -> io::Result<RateLimited<Self>>
+    where
+        Self: Sized,
+    {
+        RateLimited::new(
+            &mut DefaultExecutor::current(),
+            self,
+            max_read_bytes_per_sec,
+            max_write_bytes_per_sec,
+        )
+    }
+
+    // TODO: add methods to easily upgrade for secio/mplex/yamux
+}
+
+impl<TTransport: Dialer> DialerExtra for TTransport {}
+impl<TTransport: Listener> ListenerExtra for TTransport {}
