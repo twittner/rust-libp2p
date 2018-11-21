@@ -31,10 +31,12 @@ pub use crate::{
     public_key::PublicKey,
     transport::{
         self,
+        Endpoint,
         Dialer,
         DialerExt,
         Listener,
         ListenerExt,
+        Transport,
         TransportError,
         Denied,
         Refused,

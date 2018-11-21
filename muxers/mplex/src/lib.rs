@@ -39,6 +39,7 @@ use bytes::Bytes;
 use core::{
     StreamMuxer,
     muxing::Shutdown,
+    transport::Endpoint,
     upgrade::{InboundUpgrade, OutboundUpgrade, UpgradeInfo}
 };
 use parking_lot::Mutex;
@@ -47,25 +48,6 @@ use futures::prelude::*;
 use futures::{executor, future, stream::Fuse, task};
 use tokio_codec::Framed;
 use tokio_io::{AsyncRead, AsyncWrite};
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum Endpoint {
-    /// The socket comes from a dialer.
-    Dialer,
-    /// The socket comes from a listener.
-    Listener,
-}
-
-impl std::ops::Not for Endpoint {
-    type Output = Endpoint;
-
-    fn not(self) -> Self::Output {
-        match self {
-            Endpoint::Dialer => Endpoint::Listener,
-            Endpoint::Listener => Endpoint::Dialer
-        }
-    }
-}
 
 /// Configuration for the multiplexer.
 #[derive(Debug, Clone)]

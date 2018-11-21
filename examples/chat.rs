@@ -56,20 +56,18 @@ fn main() {
     // Set up a an encrypted DNS-enabled TCP Transport over the Mplex protocol
     let transport = libp2p::common_transport()
         .with_listener_upgrade(secio::SecioConfig::new(local_key.clone()))
+        .with_dialer_upgrade(secio::SecioConfig::new(local_key))
         .map_listener_err(|e, _| TransportError::Transport(e))
-        .listener_and_then(move |out, _| {
-            let peer_id = out.remote_key.into_peer_id();
-            let upgrade = mplex::MplexConfig::new().map_inbound(move |muxer| (peer_id, muxer) );
-            upgrade::apply_inbound(out.stream, upgrade).map_err(TransportError::Upgrade)
+        .map_dialer_err(|e, _| TransportError::Transport(e))
+        .and_then(move |out, end, _addr| {
+            let peer_id1 = out.remote_key.into_peer_id();
+            let peer_id2 = peer_id1.clone();
+            let upgrade = mplex::MplexConfig::new()
+                .map_inbound(move |muxer| (peer_id1, muxer))
+                .map_outbound(move |muxer| (peer_id2, muxer));
+            upgrade::apply(out.stream, upgrade, end).map_err(TransportError::Upgrade)
         })
         .map_listener_err(|e, _| e.into_io_error())
-        .with_dialer_upgrade(secio::SecioConfig::new(local_key))
-        .map_dialer_err(|e, _| TransportError::Transport(e))
-        .dialer_and_then(move |out, _| {
-            let peer_id = out.remote_key.into_peer_id();
-            let upgrade = mplex::MplexConfig::new().map_outbound(move |muxer| (peer_id, muxer) );
-            upgrade::apply_outbound(out.stream, upgrade).map_err(TransportError::Upgrade)
-        })
         .map_dialer_err(|e, _| e.into_io_error());
 
     // Create a Floodsub topic

@@ -44,8 +44,8 @@ use crate::upgrade::{InboundUpgrade, OutboundUpgrade};
 use futures::prelude::*;
 use multiaddr::Multiaddr;
 use self::{
-    and_then::{DialerAndThen, ListenerAndThen},
-    map::{MapDialer, MapListener},
+    and_then::{AndThen, DialerAndThen, ListenerAndThen},
+    map::{Map, MapDialer, MapListener},
     map_err::{MapErrListener, MapErrDialer},
     or_else::{DialerOrElse, ListenerOrElse},
     upgrade::{DialerUpgrade, ListenerUpgrade}
@@ -58,6 +58,25 @@ pub use self::{
     refused::Refused,
     or::Or
 };
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum Endpoint {
+    /// The socket comes from a dialer.
+    Dialer,
+    /// The socket comes from a listener.
+    Listener,
+}
+
+impl std::ops::Not for Endpoint {
+    type Output = Endpoint;
+
+    fn not(self) -> Self::Output {
+        match self {
+            Endpoint::Dialer => Endpoint::Listener,
+            Endpoint::Listener => Endpoint::Dialer
+        }
+    }
+}
 
 pub trait Listener {
     type Output;
@@ -189,4 +208,25 @@ pub trait DialerExt: Dialer {
 }
 
 impl<D: Dialer> DialerExt for D {}
+
+pub trait Transport {
+    fn map<F, O, T>(self, f: F) -> Map<Self, F>
+    where
+        Self: Dialer<Output = O> + Listener<Output = O> + Sized,
+        F: FnOnce(O, Endpoint, Multiaddr) -> T
+    {
+        Map::new(self, f)
+    }
+
+    fn and_then<F, O, E, T>(self, f: F) -> AndThen<Self, F>
+    where
+        Self: Dialer<Output = O, Error = E> + Listener<Output = O, Error = E> + Sized,
+        F: FnOnce(O, Endpoint, Multiaddr) -> T,
+        T: IntoFuture<Error = E>,
+    {
+        AndThen::new(self, f)
+    }
+}
+
+impl<T: Dialer + Listener> Transport for T {}
 

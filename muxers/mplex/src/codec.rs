@@ -21,7 +21,7 @@
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 use std::mem;
 use bytes::{BufMut, Bytes, BytesMut};
-use crate::Endpoint;
+use core::transport::Endpoint;
 use tokio_io::codec::{Decoder, Encoder};
 use unsigned_varint::{codec, encode};
 
