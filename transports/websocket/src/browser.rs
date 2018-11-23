@@ -25,7 +25,6 @@ use multiaddr::{Protocol, Multiaddr};
 use rw_stream_sink::RwStreamSink;
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 use std::io::{Read, Write};
-use std::iter;
 use std::sync::{Arc, Mutex};
 use stdweb::web::TypedArray;
 use stdweb::{self, Reference};
@@ -53,9 +52,10 @@ impl BrowserWsConfig {
 
 impl Transport for BrowserWsConfig {
     type Output = BrowserWsConn;
+    type Error = IoError;
     type Listener = Box<Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = IoError> + Send>; // TODO: use `!`
-    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = IoError> + Send>; // TODO: use `!`
-    type Dial = Box<Future<Item = Self::Output, Error = IoError> + Send>;
+    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = Self::Error> + Send>; // TODO: use `!`
+    type Dial = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
 
     #[inline]
     fn listen_on(self, a: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {

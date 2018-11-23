@@ -21,7 +21,6 @@
 use crate::{nodes::raw_swarm::ConnectedPoint, transport::Transport};
 use futures::{future::Either, prelude::*};
 use multiaddr::Multiaddr;
-use std::io;
 
 /// See the `Transport::and_then` method.
 #[derive(Debug, Clone)]
@@ -38,9 +37,10 @@ impl<T, C, F, O> Transport for AndThen<T, C>
 where
     T: Transport,
     C: FnOnce(T::Output, ConnectedPoint) -> F + Clone,
-    F: IntoFuture<Item = O, Error = io::Error>
+    F: IntoFuture<Item = O, Error = T::Error>
 {
     type Output = O;
+    type Error = T::Error;
     type Listener = AndThenStream<T::Listener, C>;
     type ListenerUpgrade = AndThenFuture<T::ListenerUpgrade, C, F::Future>;
     type Dial = AndThenFuture<T::Dial, C, F::Future>;

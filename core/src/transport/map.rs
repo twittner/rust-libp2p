@@ -39,6 +39,7 @@ where
     F: FnOnce(T::Output, ConnectedPoint) -> D + Clone
 {
     type Output = D;
+    type Error = T::Error;
     type Listener = MapStream<T::Listener, F>;
     type ListenerUpgrade = MapFuture<T::ListenerUpgrade, F>;
     type Dial = MapFuture<T::Dial, F>;

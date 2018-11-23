@@ -22,6 +22,7 @@ use futures::prelude::*;
 use multiaddr::Multiaddr;
 use std::io::{self, Cursor};
 use transport::Transport;
+use void::Void;
 
 /// Dummy implementation of `Transport` that just denies every single attempt.
 #[derive(Debug, Copy, Clone)]
@@ -30,9 +31,10 @@ pub struct DeniedTransport;
 impl Transport for DeniedTransport {
     // TODO: could use `!` for associated types once stable
     type Output = Cursor<Vec<u8>>;
+    type Error = Void;
     type Listener = Box<Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = io::Error> + Send + Sync>;
-    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = io::Error> + Send + Sync>;
-    type Dial = Box<Future<Item = Self::Output, Error = io::Error> + Send + Sync>;
+    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = Self::Error> + Send + Sync>;
+    type Dial = Box<Future<Item = Self::Output, Error = Self::Error> + Send + Sync>;
 
     #[inline]
     fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {

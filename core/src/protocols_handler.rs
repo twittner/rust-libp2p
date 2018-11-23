@@ -761,22 +761,22 @@ where
 
     fn inject_fully_negotiated_outbound(&mut self, protocol: <Self::OutboundProtocol as OutboundUpgrade<TSubstream>>::Output, endpoint: Self::OutboundOpenInfo) {
         match (protocol, endpoint) {
-            (EitherOutput::First(protocol), EitherOutput::First(info)) =>
+            (EitherOutput::A(protocol), EitherOutput::A(info)) =>
                 self.proto1.inject_fully_negotiated_outbound(protocol, info),
-            (EitherOutput::Second(protocol), EitherOutput::Second(info)) =>
+            (EitherOutput::B(protocol), EitherOutput::B(info)) =>
                 self.proto2.inject_fully_negotiated_outbound(protocol, info),
-            (EitherOutput::First(_), EitherOutput::Second(_)) =>
+            (EitherOutput::A(_), EitherOutput::B(_)) =>
                 panic!("wrong API usage: the protocol doesn't match the upgrade info"),
-            (EitherOutput::Second(_), EitherOutput::First(_)) =>
+            (EitherOutput::B(_), EitherOutput::A(_)) =>
                 panic!("wrong API usage: the protocol doesn't match the upgrade info")
         }
     }
 
     fn inject_fully_negotiated_inbound(&mut self, protocol: <Self::InboundProtocol as InboundUpgrade<TSubstream>>::Output) {
         match protocol {
-            EitherOutput::First(protocol) =>
+            EitherOutput::A(protocol) =>
                 self.proto1.inject_fully_negotiated_inbound(protocol),
-            EitherOutput::Second(protocol) =>
+            EitherOutput::B(protocol) =>
                 self.proto2.inject_fully_negotiated_inbound(protocol)
         }
     }
@@ -784,8 +784,8 @@ where
     #[inline]
     fn inject_event(&mut self, event: Self::InEvent) {
         match event {
-            EitherOutput::First(event) => self.proto1.inject_event(event),
-            EitherOutput::Second(event) => self.proto2.inject_event(event),
+            EitherOutput::A(event) => self.proto1.inject_event(event),
+            EitherOutput::B(event) => self.proto2.inject_event(event),
         }
     }
 
@@ -798,8 +798,8 @@ where
     #[inline]
     fn inject_dial_upgrade_error(&mut self, info: Self::OutboundOpenInfo, error: io::Error) {
         match info {
-            EitherOutput::First(info) => self.proto1.inject_dial_upgrade_error(info, error),
-            EitherOutput::Second(info) => self.proto2.inject_dial_upgrade_error(info, error),
+            EitherOutput::A(info) => self.proto1.inject_dial_upgrade_error(info, error),
+            EitherOutput::B(info) => self.proto2.inject_dial_upgrade_error(info, error),
         }
     }
 
@@ -812,12 +812,12 @@ where
     fn poll(&mut self) -> Poll<Option<ProtocolsHandlerEvent<Self::OutboundProtocol, Self::OutboundOpenInfo, Self::OutEvent>>, io::Error> {
         match self.proto1.poll()? {
             Async::Ready(Some(ProtocolsHandlerEvent::Custom(event))) => {
-                return Ok(Async::Ready(Some(ProtocolsHandlerEvent::Custom(EitherOutput::First(event)))));
+                return Ok(Async::Ready(Some(ProtocolsHandlerEvent::Custom(EitherOutput::A(event)))));
             },
             Async::Ready(Some(ProtocolsHandlerEvent::OutboundSubstreamRequest { upgrade, info})) => {
                 return Ok(Async::Ready(Some(ProtocolsHandlerEvent::OutboundSubstreamRequest {
                     upgrade: EitherUpgrade::A(upgrade),
-                    info: EitherOutput::First(info),
+                    info: EitherOutput::A(info),
                 })));
             },
             Async::Ready(None) => return Ok(Async::Ready(None)),
@@ -826,12 +826,12 @@ where
 
         match self.proto2.poll()? {
             Async::Ready(Some(ProtocolsHandlerEvent::Custom(event))) => {
-                return Ok(Async::Ready(Some(ProtocolsHandlerEvent::Custom(EitherOutput::Second(event)))));
+                return Ok(Async::Ready(Some(ProtocolsHandlerEvent::Custom(EitherOutput::B(event)))));
             },
             Async::Ready(Some(ProtocolsHandlerEvent::OutboundSubstreamRequest { upgrade, info })) => {
                 return Ok(Async::Ready(Some(ProtocolsHandlerEvent::OutboundSubstreamRequest {
                     upgrade: EitherUpgrade::B(upgrade),
-                    info: EitherOutput::Second(info),
+                    info: EitherOutput::B(info),
                 })));
             },
             Async::Ready(None) => return Ok(Async::Ready(None)),

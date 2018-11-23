@@ -53,15 +53,13 @@ impl DummyTransport {
 }
 impl Transport for DummyTransport {
     type Output = usize;
+    type Error = io::Error;
     type Listener =
         Box<Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = io::Error> + Send>;
-    type ListenerUpgrade = FutureResult<Self::Output, io::Error>;
-    type Dial = Box<Future<Item = Self::Output, Error = io::Error> + Send>;
+    type ListenerUpgrade = FutureResult<Self::Output, Self::Error>;
+    type Dial = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)>
-    where
-        Self: Sized,
-    {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
         let addr2 = addr.clone();
         match self.listener_state {
             ListenerState::Ok(async) => {
@@ -85,10 +83,7 @@ impl Transport for DummyTransport {
         }
     }
 
-    fn dial(self, _addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)>
-    where
-        Self: Sized,
-    {
+    fn dial(self, _addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
         unimplemented!();
     }
 

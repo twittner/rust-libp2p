@@ -61,7 +61,7 @@
 //!     .unwrap_or_else(|_| panic!("Unable to dial node"))
 //!     .and_then(|connection| {
 //!         // Sends "hello world" on the connection, will be encrypted.
-//!         write_all(connection, "hello world")
+//!         write_all(connection, "hello world").from_err()
 //!     })
 //!     .map_err(|e| panic!("error: {:?}", e));
 //!

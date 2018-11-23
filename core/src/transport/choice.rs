@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use either::{EitherListenStream, EitherOutput, EitherFuture};
+use either::{EitherListenStream, EitherError, EitherOutput, EitherFuture};
 use multiaddr::Multiaddr;
 use transport::Transport;
 
@@ -38,30 +38,31 @@ where
     B: Transport,
 {
     type Output = EitherOutput<A::Output, B::Output>;
+    type Error = EitherError<A::Error, B::Error>;
     type Listener = EitherListenStream<A::Listener, B::Listener>;
     type ListenerUpgrade = EitherFuture<A::ListenerUpgrade, B::ListenerUpgrade>;
     type Dial = EitherFuture<A::Dial, B::Dial>;
 
     fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
         let (first, addr) = match self.0.listen_on(addr) {
-            Ok((connec, addr)) => return Ok((EitherListenStream::First(connec), addr)),
+            Ok((connec, addr)) => return Ok((EitherListenStream::A(connec), addr)),
             Err(err) => err,
         };
 
         match self.1.listen_on(addr) {
-            Ok((connec, addr)) => Ok((EitherListenStream::Second(connec), addr)),
+            Ok((connec, addr)) => Ok((EitherListenStream::B(connec), addr)),
             Err((second, addr)) => Err((OrTransport(first, second), addr)),
         }
     }
 
     fn dial(self, addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
         let (first, addr) = match self.0.dial(addr) {
-            Ok(connec) => return Ok(EitherFuture::First(connec)),
+            Ok(connec) => return Ok(EitherFuture::A(connec)),
             Err(err) => err,
         };
 
         match self.1.dial(addr) {
-            Ok(connec) => Ok(EitherFuture::Second(connec)),
+            Ok(connec) => Ok(EitherFuture::B(connec)),
             Err((second, addr)) => Err((OrTransport(first, second), addr)),
         }
     }

@@ -188,13 +188,13 @@ fn build_struct(ast: &DeriveInput, data_struct: &DataStruct) -> TokenStream {
     // We call `inject_node_event` on the corresponding child.
     let inject_node_event_stmts = data_struct.fields.iter().enumerate().filter(|f| !is_ignored(&f.1)).enumerate().map(|(enum_n, (field_n, field))| {
         let mut elem = if enum_n != 0 {
-            quote!{ #either_ident::Second(ev) }
+            quote!{ #either_ident::B(ev) }
         } else {
             quote!{ ev }
         };
 
         for _ in 0 .. data_struct.fields.iter().filter(|f| !is_ignored(f)).count() - 1 - field_n {
-            elem = quote!{ #either_ident::First(#elem) };
+            elem = quote!{ #either_ident::A(#elem) };
         }
 
         Some(match field.ident {
@@ -300,12 +300,12 @@ fn build_struct(ast: &DeriveInput, data_struct: &DataStruct) -> TokenStream {
         };
 
         let mut wrapped_event = if enum_n != 0 {
-            quote!{ #either_ident::Second(event) }
+            quote!{ #either_ident::B(event) }
         } else {
             quote!{ event }
         };
         for _ in 0 .. data_struct.fields.iter().filter(|f| !is_ignored(f)).count() - 1 - field_n {
-            wrapped_event = quote!{ #either_ident::First(#wrapped_event) };
+            wrapped_event = quote!{ #either_ident::A(#wrapped_event) };
         }
 
         Some(quote!{

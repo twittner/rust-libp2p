@@ -23,6 +23,7 @@
 use futures::prelude::*;
 use libp2p_core::{
     Multiaddr, PeerId, PublicKey, muxing, Transport,
+    transport::error::Error,
     upgrade::{self, OutboundUpgradeApply, UpgradeError}
 };
 use protocol::{RemoteInfo, IdentifyProtocolConfig};
@@ -60,6 +61,7 @@ impl<TTrans> IdentifyTransport<TTrans> {
 impl<TTrans, TMuxer> Transport for IdentifyTransport<TTrans>
 where
     TTrans: Transport<Output = TMuxer>,
+    TTrans::Error: Send + 'static,
     TMuxer: muxing::StreamMuxer + Send + Sync + 'static,      // TODO: remove unnecessary bounds
     TMuxer::Substream: Send + Sync + 'static,      // TODO: remove unnecessary bounds
     TMuxer::OutboundSubstream: Send + 'static,      // TODO: remove unnecessary bounds
@@ -68,9 +70,10 @@ where
     TTrans::ListenerUpgrade: Send + 'static,
 {
     type Output = (PeerId, TMuxer);
+    type Error = Error<TTrans::Error, IoError>;
     type Listener = Box<Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = IoError> + Send>;
-    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = IoError> + Send>;
-    type Dial = Box<Future<Item = Self::Output, Error = IoError> + Send>;
+    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
+    type Dial = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
 
     #[inline]
     fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
@@ -90,9 +93,11 @@ where
             }
         };
 
-        let dial = dial.and_then(move |muxer| {
-            IdRetriever::new(muxer, IdentifyProtocolConfig).map_err(|e| e.into_io_error())
-        });
+        let dial = dial
+            .map_err(Error::Transport)
+            .and_then(move |muxer| {
+                IdRetriever::new(muxer, IdentifyProtocolConfig).from_err()
+            });
 
         Ok(Box::new(dial) as Box<_>)
     }

@@ -432,7 +432,7 @@ mod tests {
 
     use self::libp2p_tcp_transport::TcpConfig;
     use futures::{Future, Sink, Stream};
-    use libp2p_core::{Transport, PeerId};
+    use libp2p_core::{transport::error::Error, Transport, PeerId};
     use multihash::{encode, Hash};
     use protocol::{KadConnectionType, KadMsg, KademliaProtocolConfig, KadPeer};
     use std::sync::mpsc;
@@ -509,9 +509,13 @@ mod tests {
 
                 let future = listener
                     .into_future()
-                    .map_err(|(err, _)| err)
+                    .map_err(|(err, _)| Error::Transport(err))
                     .and_then(|(client, _)| client.unwrap().0)
-                    .and_then(|proto| proto.into_future().map_err(|(err, _)| err).map(|(v, _)| v))
+                    .and_then(|proto| {
+                        proto.into_future()
+                            .map_err(|(err, _)| Error::Transport(err))
+                            .map(|(v, _)| v)
+                    })
                     .map(|recv_msg| {
                         assert_eq!(recv_msg.unwrap(), msg_server);
                         ()
@@ -525,7 +529,7 @@ mod tests {
             let future = transport
                 .dial(rx.recv().unwrap())
                 .unwrap_or_else(|_| panic!())
-                .and_then(|proto| proto.send(msg_client))
+                .and_then(|proto| proto.send(msg_client).map_err(Error::Transport))
                 .map(|_| ());
             let mut rt = Runtime::new().unwrap();
             let _ = rt.block_on(future).unwrap();

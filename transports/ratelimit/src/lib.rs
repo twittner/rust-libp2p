@@ -142,9 +142,10 @@ impl<T> Future for ListenerUpgrade<T>
 where
     T: Transport + 'static,
     T::Output: AsyncRead + AsyncWrite,
+    T::Error: From<io::Error>
 {
     type Item = Connection<T::Output>;
-    type Error = io::Error;
+    type Error = T::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let conn = try_ready!(self.0.value.poll());
@@ -158,12 +159,14 @@ impl<T> Transport for RateLimited<T>
 where
     T: Transport + 'static,
     T::Dial: Send,
+    T::Error: From<io::Error> + Send,
     T::Output: AsyncRead + AsyncWrite + Send,
 {
     type Output = Connection<T::Output>;
+    type Error = T::Error;
     type Listener = Listener<T>;
     type ListenerUpgrade = ListenerUpgrade<T>;
-    type Dial = Box<Future<Item = Connection<T::Output>, Error = io::Error> + Send>;
+    type Dial = Box<Future<Item = Connection<T::Output>, Error = Self::Error> + Send>;
 
     fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)>
     where

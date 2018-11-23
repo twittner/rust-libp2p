@@ -59,6 +59,7 @@ impl<T> Transport for WsConfig<T>
 where
     // TODO: this 'static is pretty arbitrary and is necessary because of the websocket library
     T: Transport + 'static,
+    T::Error: From<IoError> + Send,
     T::Dial: Send,
     T::Listener: Send,
     T::ListenerUpgrade: Send,
@@ -66,15 +67,13 @@ where
     T::Output: AsyncRead + AsyncWrite + Send,
 {
     type Output = Box<AsyncStream + Send>;
+    type Error = T::Error;
     type Listener =
         stream::Map<T::Listener, fn((<T as Transport>::ListenerUpgrade, Multiaddr)) -> (Self::ListenerUpgrade, Multiaddr)>;
-    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = IoError> + Send>;
-    type Dial = Box<Future<Item = Self::Output, Error = IoError> + Send>;
+    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
+    type Dial = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
 
-    fn listen_on(
-        self,
-        original_addr: Multiaddr,
-    ) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, original_addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
         let mut inner_addr = original_addr.clone();
         match inner_addr.pop() {
             Some(Protocol::Ws) => {}
@@ -192,7 +191,7 @@ where
                 ClientBuilder::new(&ws_addr)
                     .expect("generated ws address is always valid")
                     .async_connect_on(connec)
-                    .map_err(|err| IoError::new(IoErrorKind::Other, err))
+                    .map_err(|err| IoError::new(IoErrorKind::Other, err).into())
                     .map(|(client, _)| {
                         debug!("Upgraded outgoing connection to websockets");
 

@@ -52,6 +52,7 @@ impl<T> Clone for Dialer<T> {
 
 impl<T: IntoBuf + Send + 'static> Transport for Dialer<T> {
     type Output = Channel<T>;
+    type Error = io::Error;
     type Listener = Box<Stream<Item=(Self::ListenerUpgrade, Multiaddr), Error=io::Error> + Send>;
     type ListenerUpgrade = FutureResult<Self::Output, io::Error>;
     type Dial = Box<Future<Item=Self::Output, Error=io::Error> + Send>;
@@ -94,6 +95,7 @@ impl<T> Clone for Listener<T> {
 
 impl<T: IntoBuf + Send + 'static> Transport for Listener<T> {
     type Output = Channel<T>;
+    type Error = io::Error;
     type Listener = Box<Stream<Item=(Self::ListenerUpgrade, Multiaddr), Error=io::Error> + Send>;
     type ListenerUpgrade = FutureResult<Self::Output, io::Error>;
     type Dial = Box<Future<Item=Self::Output, Error=io::Error> + Send>;

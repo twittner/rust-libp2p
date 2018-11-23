@@ -18,13 +18,13 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use libp2p_core::{PeerId, upgrade::UpgradeError};
+use libp2p_core::{PeerId, transport::error::Error};
 use std::{fmt, io};
 
 #[derive(Debug)]
-pub enum RelayError<E> {
+pub enum RelayError<T, E> {
     Io(io::Error),
-    Upgrade(UpgradeError<E>),
+    Transport(Error<T, E>),
     NoRelayFor(PeerId),
     Message(&'static str),
     #[doc(hidden)]
@@ -32,14 +32,15 @@ pub enum RelayError<E> {
 }
 
 
-impl<E> fmt::Display for RelayError<E>
+impl<T, E> fmt::Display for RelayError<T, E>
 where
+    T: fmt::Display,
     E: fmt::Display
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             RelayError::Io(e) => write!(f, "i/o error: {}", e),
-            RelayError::Upgrade(e) => write!(f, "upgrade error: {}", e),
+            RelayError::Transport(e) => write!(f, "transport error: {}", e),
             RelayError::NoRelayFor(p) => write!(f, "no relay for peer: {:?}", p),
             RelayError::Message(m) => write!(f, "{}", m),
             RelayError::__Nonexhaustive => f.write_str("__Nonexhaustive")
@@ -47,14 +48,15 @@ where
     }
 }
 
-impl<E> std::error::Error for RelayError<E>
+impl<T, E> std::error::Error for RelayError<T, E>
 where
+    T: std::error::Error,
     E: std::error::Error
 {
     fn cause(&self) -> Option<&dyn std::error::Error> {
         match self {
             RelayError::Io(e) => Some(e),
-            RelayError::Upgrade(e) => Some(e),
+            RelayError::Transport(e) => Some(e),
             RelayError::NoRelayFor(_) => None,
             RelayError::Message(_) => None,
             RelayError::__Nonexhaustive => None
@@ -62,15 +64,15 @@ where
     }
 }
 
-impl<E> From<io::Error> for RelayError<E> {
+impl<T, E> From<io::Error> for RelayError<T, E> {
     fn from(e: io::Error) -> Self {
         RelayError::Io(e)
     }
 }
 
-impl<E> From<UpgradeError<E>> for RelayError<E> {
-    fn from(e: UpgradeError<E>) -> Self {
-        RelayError::Upgrade(e)
+impl<T, E> From<Error<T, E>> for RelayError<T, E> {
+    fn from(e: Error<T, E>) -> Self {
+        RelayError::Transport(e)
     }
 }
 

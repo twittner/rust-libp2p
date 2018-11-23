@@ -25,7 +25,7 @@ use crate::{
     utility::{Peer, RelayAddr}
 };
 use futures::{stream, prelude::*};
-use libp2p_core::{transport::Transport, upgrade::apply_outbound};
+use libp2p_core::{transport::{error::Error, Transport}, upgrade::apply_outbound};
 use log::{debug, info, trace};
 use multiaddr::Multiaddr;
 use peerstore::{PeerAccess, PeerId, Peerstore};
@@ -44,6 +44,7 @@ pub struct RelayTransport<T, P> {
 impl<T, P, S> Transport for RelayTransport<T, P>
 where
     T: Transport + Send + Clone + 'static,
+    T::Error: Send,
     T::Dial: Send,
     T::Listener: Send,
     T::ListenerUpgrade: Send,
@@ -53,9 +54,10 @@ where
     for<'a> &'a S: Peerstore
 {
     type Output = T::Output;
+    type Error = RelayError<T::Error, io::Error>;
     type Listener = Box<Stream<Item=(Self::ListenerUpgrade, Multiaddr), Error=io::Error> + Send>;
-    type ListenerUpgrade = Box<Future<Item=Self::Output, Error=io::Error> + Send>;
-    type Dial = Box<Future<Item=Self::Output, Error=io::Error> + Send>;
+    type ListenerUpgrade = Box<Future<Item=Self::Output, Error=Self::Error> + Send>;
+    type Dial = Box<Future<Item=Self::Output, Error=Self::Error> + Send>;
 
     fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
         Err((self, addr))
@@ -74,10 +76,10 @@ where
             RelayAddr::Address { relay, dest } => {
                 if let Some(ref r) = relay {
                     let f = self.relay_via(r, &dest).map_err(|this| (this, addr))?;
-                    Ok(Box::new(f.map_err(|e| io::Error::new(io::ErrorKind::Other, e))))
+                    Ok(Box::new(f))
                 } else {
                     let f = self.relay_to(&dest).map_err(|this| (this, addr))?;
-                    Ok(Box::new(f.map_err(|e| io::Error::new(io::ErrorKind::Other, e))))
+                    Ok(Box::new(f))
                 }
             }
         }
@@ -115,7 +117,7 @@ where
     }
 
     // Relay to destination over any available relay node.
-    fn relay_to(self, destination: &Peer) -> Result<impl Future<Item=T::Output, Error=RelayError<io::Error>>, Self> {
+    fn relay_to(self, destination: &Peer) -> Result<impl Future<Item=T::Output, Error=RelayError<T::Error, io::Error>>, Self> {
         trace!("relay_to {:?}", destination.id);
         let mut dials = Vec::new();
         for relay in &*self.relays {
@@ -153,7 +155,7 @@ where
     }
 
     // Relay to destination via the given peer.
-    fn relay_via(self, relay: &Peer, destination: &Peer) -> Result<impl Future<Item=T::Output, Error=RelayError<io::Error>>, Self> {
+    fn relay_via(self, relay: &Peer, destination: &Peer) -> Result<impl Future<Item=T::Output, Error=RelayError<T::Error, io::Error>>, Self> {
         trace!("relay_via {:?} to {:?}", relay.id, destination.id);
         let mut addresses = Vec::new();
 
@@ -181,8 +183,8 @@ where
             .filter_map(move |addr| dialer.clone().dial(addr).ok())
             .and_then(move |dial| {
                 let upgrade = upgrade.clone();
-                dial.map_err(|_| RelayError::Message("could not dial"))
-                    .and_then(move |c| apply_outbound(c, upgrade).from_err())
+                dial.map_err(|e| Error::Transport(e).into())
+                    .and_then(move |c| apply_outbound(c, upgrade).from_err().map_err(RelayError::Transport))
             })
             .then(|result| Ok(result.ok()))
             .filter_map(|result| result)

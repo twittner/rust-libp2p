@@ -27,7 +27,7 @@ use crate::{
 };
 use futures::{stream, future::{self, Either::{A, B}, FutureResult}, prelude::*};
 use libp2p_core::{
-    transport::Transport,
+    transport::{error::Error, Transport},
     upgrade::{apply_outbound, InboundUpgrade, OutboundUpgrade, UpgradeInfo}
 };
 use log::debug;
@@ -70,6 +70,7 @@ impl<C, T, P, S> InboundUpgrade<C> for RelayConfig<T, P>
 where
     C: AsyncRead + AsyncWrite + Send + 'static,
     T: Transport + Clone + Send + 'static,
+    T::Error: Send,
     T::Dial: Send,
     T::Listener: Send,
     T::ListenerUpgrade: Send,
@@ -79,7 +80,7 @@ where
     for<'a> &'a S: Peerstore
 {
     type Output = Output<C>;
-    type Error = RelayError<Void>;
+    type Error = RelayError<T::Error, Void>;
     type Future = Box<Future<Item=Self::Output, Error=Self::Error> + Send>;
 
     fn upgrade_inbound(self, conn: C, _: ()) -> Self::Future {
@@ -126,7 +127,7 @@ where
     }
 
     // HOP message handling (relay mode).
-    fn on_hop<C>(self, mut msg: CircuitRelay, io: Io<C>) -> impl Future<Item=impl Future<Item=(), Error=io::Error>, Error=RelayError<Void>>
+    fn on_hop<C>(self, mut msg: CircuitRelay, io: Io<C>) -> impl Future<Item=impl Future<Item=(), Error=io::Error>, Error=RelayError<T::Error, Void>>
     where
         C: AsyncRead + AsyncWrite + 'static,
     {
@@ -158,7 +159,10 @@ where
             .and_then(move |dest_addr| {
                 dialer.clone().dial(dest_addr).map_err(|_| RelayError::Message("could no dial addr"))
             })
-            .and_then(|outbound| outbound.from_err().and_then(|c| apply_outbound(c, TrivialUpgrade).from_err()))
+            .and_then(|outbound| {
+                outbound.map_err(|e| RelayError::Transport(Error::Transport(e)))
+                    .and_then(|c| apply_outbound(c, TrivialUpgrade).from_err().map_err(RelayError::Transport))
+            })
             .then(|result| Ok(result.ok()))
             .filter_map(|result| result)
             .into_future()

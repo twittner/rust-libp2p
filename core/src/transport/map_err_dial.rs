@@ -21,7 +21,6 @@
 use crate::transport::Transport;
 use futures::prelude::*;
 use multiaddr::Multiaddr;
-use std::io;
 
 /// See `Transport::map_err_dial`.
 #[derive(Debug, Copy, Clone)]
@@ -38,9 +37,10 @@ impl<T, F> MapErrDial<T, F> {
 impl<T, F> Transport for MapErrDial<T, F>
 where
     T: Transport,
-    F: FnOnce(io::Error, Multiaddr) -> io::Error
+    F: FnOnce(T::Error, Multiaddr) -> T::Error
 {
     type Output = T::Output;
+    type Error = T::Error;
     type Listener = T::Listener;
     type ListenerUpgrade = T::ListenerUpgrade;
     type Dial = MapErrFuture<T::Dial, F>;
@@ -76,13 +76,13 @@ pub struct MapErrFuture<T, F> {
     args: Option<(F, Multiaddr)>,
 }
 
-impl<T, E, F, A> Future for MapErrFuture<T, F>
+impl<T, F> Future for MapErrFuture<T, F>
 where
-    T: Future<Error = E>,
-    F: FnOnce(E, Multiaddr) -> A
+    T: Future,
+    F: FnOnce(T::Error, Multiaddr) -> T::Error
 {
     type Item = T::Item;
-    type Error = A;
+    type Error = T::Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self.inner.poll() {

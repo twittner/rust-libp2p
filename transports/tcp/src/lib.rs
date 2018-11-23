@@ -130,8 +130,9 @@ impl TcpConfig {
 
 impl Transport for TcpConfig {
     type Output = TcpTransStream;
+    type Error = IoError;
     type Listener = TcpListenStream;
-    type ListenerUpgrade = FutureResult<Self::Output, IoError>;
+    type ListenerUpgrade = FutureResult<Self::Output, Self::Error>;
     type Dial = TcpDialFut;
 
     fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {

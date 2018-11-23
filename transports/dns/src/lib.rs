@@ -96,11 +96,13 @@ impl<T> Transport for DnsConfig<T>
 where
     T: Transport + Send + 'static, // TODO: 'static :-/
     T::Dial: Send,
+    T::Error: From<IoError>
 {
     type Output = T::Output;
+    type Error = T::Error;
     type Listener = T::Listener;
     type ListenerUpgrade = T::ListenerUpgrade;
-    type Dial = Box<Future<Item = Self::Output, Error = IoError> + Send>;
+    type Dial = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
 
     #[inline]
     fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
@@ -164,7 +166,7 @@ where
             .and_then(move |addr| {
                 inner
                     .dial(addr)
-                    .map_err(|_| IoError::new(IoErrorKind::Other, "multiaddr not supported"))
+                    .map_err(|_| IoError::new(IoErrorKind::Other, "multiaddr not supported").into())
             })
             .flatten();
 
@@ -228,7 +230,6 @@ mod tests {
     use futures::future;
     use swarm::Transport;
     use multiaddr::{Protocol, Multiaddr};
-    use std::io::Error as IoError;
     use DnsConfig;
 
     #[test]
@@ -237,9 +238,10 @@ mod tests {
         struct CustomTransport;
         impl Transport for CustomTransport {
             type Output = <TcpConfig as Transport>::Output;
+            type Error = <TcpConfig as Transport>::Error;
             type Listener = <TcpConfig as Transport>::Listener;
             type ListenerUpgrade = <TcpConfig as Transport>::ListenerUpgrade;
-            type Dial = future::Empty<Self::Output, IoError>;
+            type Dial = future::Empty<Self::Output, Self::Error>;
 
             #[inline]
             fn listen_on(

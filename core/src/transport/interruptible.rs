@@ -44,8 +44,10 @@ impl<T> Interruptible<T> {
 impl<T> Transport for Interruptible<T>
 where
     T: Transport,
+    T::Error: From<IoError>
 {
     type Output = T::Output;
+    type Error = T::Error;
     type Listener = T::Listener;
     type ListenerUpgrade = T::ListenerUpgrade;
     type Dial = InterruptibleDial<T::Dial>;
@@ -88,17 +90,19 @@ pub struct InterruptibleDial<F> {
     rx: future::Shared<oneshot::Receiver<()>>,
 }
 
-impl<F> Future for InterruptibleDial<F>
-    where F: Future<Error = IoError>
+impl<F, E> Future for InterruptibleDial<F>
+where
+    F: Future<Error = E>,
+    E: From<IoError>
 {
     type Item = F::Item;
-    type Error = IoError;
+    type Error = E;
 
     #[inline]
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         match self.rx.poll() {
             Ok(Async::Ready(_)) | Err(_) => {
-                return Err(IoError::new(IoErrorKind::ConnectionAborted, "connection interrupted"));
+                return Err(IoError::new(IoErrorKind::ConnectionAborted, "connection interrupted").into());
             },
             Ok(Async::NotReady) => (),
         };

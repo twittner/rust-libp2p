@@ -211,6 +211,7 @@ where TTrans: Transport
 impl<'a, TTrans, TInEvent, TOutEvent, TMuxer, THandler> IncomingConnectionEvent<'a, TTrans, TInEvent, TOutEvent, THandler>
 where
     TTrans: Transport<Output = (PeerId, TMuxer)>,
+    TTrans::Error: std::error::Error + Send + Sync + 'static,
     TTrans::ListenerUpgrade: Send + 'static,
     THandler: NodeHandler<Substream = Substream<TMuxer>, InEvent = TInEvent, OutEvent = TOutEvent> + Send + 'static,
     THandler::OutboundOpenInfo: Send + 'static, // TODO: shouldn't be necessary
@@ -392,6 +393,7 @@ where
     pub fn dial(&mut self, addr: Multiaddr, handler: THandler) -> Result<(), Multiaddr>
     where
         TTrans: Transport<Output = (PeerId, TMuxer)>,
+        TTrans::Error: std::error::Error + Send + Sync + 'static,
         TTrans::Dial: Send + 'static,
         TMuxer: StreamMuxer + Send + Sync + 'static,
         TMuxer::OutboundSubstream: Send,
@@ -477,7 +479,9 @@ where
     fn start_dial_out(&mut self, peer_id: PeerId, handler: THandler, first: Multiaddr, rest: Vec<Multiaddr>)
     where
         TTrans: Transport<Output = (PeerId, TMuxer)>,
+        TTrans::Error: std::error::Error + Send + Sync + 'static,
         TTrans::Dial: Send + 'static,
+        TTrans::Error: From<IoError> + Send,
         TMuxer: StreamMuxer + Send + Sync + 'static,
         TMuxer::OutboundSubstream: Send,
         TMuxer::Substream: Send,
@@ -493,7 +497,7 @@ where
                     } else {
                         let msg = format!("public key mismatch; expected = {:?}; obtained = {:?}",
                                           expected_peer_id, actual_peer_id);
-                        Err(IoError::new(IoErrorKind::Other, msg))
+                        Err(IoError::new(IoErrorKind::Other, msg).into())
                     }
                 });
                 self.active_nodes.add_reach_attempt(fut, handler)
@@ -521,6 +525,7 @@ where
     pub fn poll(&mut self) -> Async<RawSwarmEvent<TTrans, TInEvent, TOutEvent, THandler>>
     where
         TTrans: Transport<Output = (PeerId, TMuxer)>,
+        TTrans::Error: std::error::Error + From<IoError> + Send + Sync + 'static,
         TTrans::Dial: Send + 'static,
         TTrans::ListenerUpgrade: Send + 'static,
         TMuxer: StreamMuxer + Send + Sync + 'static,
@@ -849,6 +854,7 @@ impl<'a, TTrans, TMuxer, TInEvent, TOutEvent, THandler>
     Peer<'a, TTrans, TInEvent, TOutEvent, THandler>
 where
     TTrans: Transport<Output = (PeerId, TMuxer)> + Clone,
+    TTrans::Error: std::error::Error + From<IoError> + Send + Sync + 'static,
     TTrans::Dial: Send + 'static,
     TMuxer: StreamMuxer + Send + Sync + 'static,
     TMuxer::OutboundSubstream: Send,
@@ -1067,6 +1073,7 @@ impl<'a, TTrans, TInEvent, TOutEvent, TMuxer, THandler>
     PeerNotConnected<'a, TTrans, TInEvent, TOutEvent, THandler>
 where
     TTrans: Transport<Output = (PeerId, TMuxer)> + Clone,
+    TTrans::Error: std::error::Error + From<IoError> + Send + Sync + 'static,
     TTrans::Dial: Send + 'static,
     TMuxer: StreamMuxer + Send + Sync + 'static,
     TMuxer::OutboundSubstream: Send,

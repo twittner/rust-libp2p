@@ -21,7 +21,7 @@
 use futures::prelude::*;
 use multiaddr::Multiaddr;
 use crate::{
-    transport::Transport,
+    transport::{error::Error, Transport},
     upgrade::{OutboundUpgrade, InboundUpgrade, UpgradeInfo, apply_inbound, apply_outbound}
 };
 use tokio_io::{AsyncRead, AsyncWrite};
@@ -38,6 +38,7 @@ impl<T, U> Upgrade<T, U> {
 impl<D, U, O, E> Transport for Upgrade<D, U>
 where
     D: Transport,
+    D::Error: Send + 'static,
     D::Dial: Send + 'static,
     D::Listener: Send + 'static,
     D::ListenerUpgrade: Send + 'static,
@@ -51,18 +52,18 @@ where
     E: std::error::Error + Send + Sync + 'static
 {
     type Output = O;
+    type Error = Error<D::Error, E>;
     type Listener = Box<Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = std::io::Error> + Send>;
-    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = std::io::Error> + Send>;
-    type Dial = Box<Future<Item = Self::Output, Error = std::io::Error> + Send>;
+    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
+    type Dial = Box<Future<Item = Self::Output, Error = Self::Error> + Send>;
 
     fn dial(self, addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
         let upgrade = self.upgrade;
         match self.inner.dial(addr.clone()) {
             Ok(outbound) => {
                 let future = outbound
-                    .and_then(move |x| apply_outbound(x, upgrade).map_err(|e| {
-                        std::io::Error::new(std::io::ErrorKind::Other, e)
-                    }));
+                    .map_err(Error::Transport)
+                    .and_then(move |x| apply_outbound(x, upgrade).from_err());
                 Ok(Box::new(future))
             }
             Err((dialer, addr)) => Err((Upgrade::new(dialer, upgrade), addr))
@@ -77,9 +78,8 @@ where
                     .map(move |(future, addr)| {
                         let upgrade = upgrade.clone();
                         let future = future
-                            .and_then(move |x| apply_inbound(x, upgrade).map_err(|e| {
-                                 std::io::Error::new(std::io::ErrorKind::Other, e)
-                            }));
+                            .map_err(Error::Transport)
+                            .and_then(move |x| apply_inbound(x, upgrade).from_err());
                     (Box::new(future) as Box<_>, addr)
                 });
                 Ok((Box::new(stream), addr))

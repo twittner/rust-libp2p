@@ -32,10 +32,8 @@ extern crate tokio_timer;
 
 use futures::{Async, Future, Poll, Stream};
 use libp2p_core::{Multiaddr, Transport};
-use std::io::{Error as IoError, ErrorKind as IoErrorKind};
-use std::time::Duration;
+use std::{fmt, io, time::Duration};
 use tokio_timer::Timeout;
-use tokio_timer::timeout::Error as TimeoutError;
 
 /// Wraps around a `Transport` and adds a timeout to all the incoming and outgoing connections.
 ///
@@ -85,9 +83,10 @@ where
     InnerTrans: Transport,
 {
     type Output = InnerTrans::Output;
+    type Error = Error<InnerTrans::Error>;
     type Listener = TimeoutListener<InnerTrans::Listener>;
-    type ListenerUpgrade = TokioTimerMapErr<Timeout<InnerTrans::ListenerUpgrade>>;
-    type Dial = TokioTimerMapErr<Timeout<InnerTrans::Dial>>;
+    type ListenerUpgrade = TokioTimerMapErr<InnerTrans::ListenerUpgrade>;
+    type Dial = TokioTimerMapErr<InnerTrans::Dial>;
 
     fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
         match self.inner.listen_on(addr) {
@@ -143,9 +142,9 @@ pub struct TimeoutListener<InnerStream> {
 
 impl<InnerStream, O> Stream for TimeoutListener<InnerStream>
 where
-    InnerStream: Stream<Item = (O, Multiaddr)>,
+    InnerStream: Stream<Item = (O, Multiaddr), Error = io::Error>,
 {
-    type Item = (TokioTimerMapErr<Timeout<O>>, Multiaddr);
+    type Item = (TokioTimerMapErr<O>, Multiaddr);
     type Error = InnerStream::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
@@ -161,34 +160,66 @@ where
     }
 }
 
-/// Wraps around a `Future`. Turns the error type from `TimeoutError<IoError>` to `IoError`.
+/// Wraps around a `Future`. Turns the error type from `TimeoutError<io::Error>` to `Error`.
 // TODO: can be replaced with `impl Future` once `impl Trait` are fully stable in Rust
 //       (https://github.com/rust-lang/rust/issues/34511)
 #[must_use = "futures do nothing unless polled"]
 pub struct TokioTimerMapErr<InnerFut> {
-    inner: InnerFut,
+    inner: Timeout<InnerFut>
 }
 
 impl<InnerFut> Future for TokioTimerMapErr<InnerFut>
 where
-    InnerFut: Future<Error = TimeoutError<IoError>>,
+    InnerFut: Future
 {
     type Item = InnerFut::Item;
-    type Error = IoError;
+    type Error = Error<InnerFut::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        self.inner.poll().map_err(|err: TimeoutError<IoError>| {
+        self.inner.poll().map_err(|err| {
             if err.is_inner() {
-                err.into_inner().expect("ensured by is_inner()")
+                Error::Transport(err.into_inner().expect("ensured by is_inner()"))
             } else if err.is_elapsed() {
                 debug!("timeout elapsed for connection");
-                IoErrorKind::TimedOut.into()
+                Error::Timeout
             } else {
                 assert!(err.is_timer());
                 debug!("tokio timer error in timeout wrapper");
-                let err = err.into_timer().expect("ensure by is_timer()");
-                IoError::new(IoErrorKind::Other, err)
+                Error::Timer
             }
         })
     }
 }
+
+#[derive(Debug)]
+pub enum Error<E> {
+    Transport(E),
+    Timeout,
+    Timer
+}
+
+impl<E> fmt::Display for Error<E>
+where
+    E: fmt::Display
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Error::Transport(e) => write!(f, "transport error: {}", e),
+            Error::Timeout => f.write_str("timeout"),
+            Error::Timer => f.write_str("timer error")
+        }
+    }
+}
+
+impl<E> std::error::Error for Error<E>
+where
+    E: std::error::Error
+{
+    fn cause(&self) -> Option<&dyn std::error::Error> {
+        match self {
+            Error::Transport(e) => Some(e),
+            Error::Timeout | Error::Timer => None
+        }
+    }
+}
+

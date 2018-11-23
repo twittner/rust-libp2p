@@ -86,9 +86,10 @@ impl UdsConfig {
 
 impl Transport for UdsConfig {
     type Output = UnixStream;
+    type Error = IoError;
     type Listener = Box<Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = IoError> + Send + Sync>;
-    type ListenerUpgrade = FutureResult<Self::Output, IoError>;
-    type Dial = Box<Future<Item = UnixStream, Error = IoError> + Send + Sync>;  // TODO: name this type
+    type ListenerUpgrade = FutureResult<Self::Output, Self::Error>;
+    type Dial = Box<Future<Item = UnixStream, Error = Self::Error> + Send + Sync>;  // TODO: name this type
 
     fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
         if let Ok(path) = multiaddr_to_path(&addr) {
