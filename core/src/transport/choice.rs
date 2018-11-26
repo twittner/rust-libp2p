@@ -20,7 +20,7 @@
 
 use either::{EitherListenStream, EitherOutput, EitherFuture};
 use multiaddr::Multiaddr;
-use transport::Transport;
+use transport::{MultiaddrSeq, Transport};
 
 /// Struct returned by `or_transport()`.
 #[derive(Debug, Copy, Clone)]
@@ -42,7 +42,7 @@ where
     type ListenerUpgrade = EitherFuture<A::ListenerUpgrade, B::ListenerUpgrade>;
     type Dial = EitherFuture<A::Dial, B::Dial>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         let (first, addr) = match self.0.listen_on(addr) {
             Ok((connec, addr)) => return Ok((EitherListenStream::First(connec), addr)),
             Err(err) => err,

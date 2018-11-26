@@ -18,6 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+use crate::transport::MultiaddrSeq;
 use futures::prelude::*;
 use std::fmt;
 use void::Void;
@@ -59,10 +60,10 @@ use std::collections::VecDeque;
 /// let future = listeners.for_each(move |event| {
 ///     match event {
 ///         ListenersEvent::Closed { listen_addr, listener, result } => {
-///             println!("Listener {} has been closed: {:?}", listen_addr, result);
+///             println!("Listener {:?} has been closed: {:?}", listen_addr, result);
 ///         },
 ///         ListenersEvent::Incoming { upgrade, listen_addr, .. } => {
-///             println!("A connection has arrived on {}", listen_addr);
+///             println!("A connection has arrived on {:?}", listen_addr);
 ///             // We don't do anything with the newly-opened connection, but in a real-life
 ///             // program you probably want to use it!
 ///             drop(upgrade);
@@ -94,7 +95,7 @@ where
     /// The object that actually listens.
     listener: TTrans::Listener,
     /// Address it is listening on.
-    address: Multiaddr,
+    address: MultiaddrSeq,
 }
 
 /// Event that can happen on the `ListenersStream`.
@@ -107,7 +108,7 @@ where
         /// The produced upgrade.
         upgrade: TTrans::ListenerUpgrade,
         /// Address of the listener which received the connection.
-        listen_addr: Multiaddr,
+        listen_addr: MultiaddrSeq,
         /// Address used to send back data to the incoming client.
         send_back_addr: Multiaddr,
     },
@@ -115,7 +116,7 @@ where
     /// A listener has closed, either gracefully or with an error.
     Closed {
         /// Address of the listener which closed.
-        listen_addr: Multiaddr,
+        listen_addr: MultiaddrSeq,
         /// The listener that closed.
         listener: TTrans::Listener,
         /// The error that happened. `Ok` if gracefully closed.
@@ -149,7 +150,7 @@ where
     /// Start listening on a multiaddress.
     ///
     /// Returns an error if the transport doesn't support the given multiaddress.
-    pub fn listen_on(&mut self, addr: Multiaddr) -> Result<Multiaddr, Multiaddr>
+    pub fn listen_on(&mut self, addr: Multiaddr) -> Result<MultiaddrSeq, Multiaddr>
     where
         TTrans: Clone,
     {
@@ -176,7 +177,7 @@ where
     /// Returns an iterator that produces the list of addresses we're listening on.
     #[inline]
     pub fn listeners(&self) -> impl Iterator<Item = &Multiaddr> {
-        self.listeners.iter().map(|l| &l.address)
+        self.listeners.iter().flat_map(|l| l.address.iter())
     }
 
     /// Provides an API similar to `Stream`, except that it cannot error.
@@ -300,7 +301,7 @@ mod tests {
                             Box::new(stream)
                         }
                         Async::Ready(Some(tup)) => {
-                            let addr = l.address.clone();
+                            let addr = l.address.head();
                             let stream = stream::poll_fn(move || Ok( Async::Ready(Some(tup.clone())) ))
                                 .map(move |stream| (future::ok(stream), addr.clone()));
                             Box::new(stream)
@@ -329,7 +330,7 @@ mod tests {
             .and_then(|(event, _)| {
                 match event {
                     Some(ListenersEvent::Incoming { listen_addr, upgrade, send_back_addr }) => {
-                        assert_eq!(listen_addr, "/memory".parse().unwrap());
+                        assert!(listen_addr.iter().all(|a| *a == "/memory".parse().unwrap()));
                         assert_eq!(send_back_addr, "/memory".parse().unwrap());
                         upgrade.map(|_| ()).map_err(|_| panic!())
                     },
@@ -402,7 +403,7 @@ mod tests {
 
         assert_matches!(ls.poll(), Async::Ready(listeners_event) => {
             assert_matches!(listeners_event, ListenersEvent::Incoming{mut upgrade, listen_addr, ..} => {
-                assert_eq!(listen_addr.to_string(), "/ip4/127.0.0.2/tcp/4321");
+                assert_eq!(listen_addr.head().to_string(), "/ip4/127.0.0.2/tcp/4321");
                 assert_matches!(upgrade.poll().unwrap(), Async::Ready(tup) => {
                     assert_eq!(tup, expected_output)
                 });
@@ -411,7 +412,7 @@ mod tests {
 
         assert_matches!(ls.poll(), Async::Ready(listeners_event) => {
             assert_matches!(listeners_event, ListenersEvent::Incoming{mut upgrade, listen_addr, ..} => {
-                assert_eq!(listen_addr.to_string(), "/ip4/127.0.0.1/tcp/1234");
+                assert_eq!(listen_addr.head().to_string(), "/ip4/127.0.0.1/tcp/1234");
                 assert_matches!(upgrade.poll().unwrap(), Async::Ready(tup) => {
                     assert_eq!(tup, expected_output)
                 });
@@ -421,7 +422,7 @@ mod tests {
         set_listener_state(&mut ls, 1, ListenerState::Ok(Async::NotReady));
         assert_matches!(ls.poll(), Async::Ready(listeners_event) => {
             assert_matches!(listeners_event, ListenersEvent::Incoming{mut upgrade, listen_addr, ..} => {
-                assert_eq!(listen_addr.to_string(), "/ip4/127.0.0.1/tcp/1234");
+                assert_eq!(listen_addr.head().to_string(), "/ip4/127.0.0.1/tcp/1234");
                 assert_matches!(upgrade.poll().unwrap(), Async::Ready(tup) => {
                     assert_eq!(tup, expected_output)
                 });
@@ -476,14 +477,14 @@ mod tests {
         // in turn.
         for n in (0..4).rev() {
             assert_matches!(ls.poll(), Async::Ready(ListenersEvent::Incoming{listen_addr, ..}) => {
-                assert_eq!(listen_addr.to_string(), format!("/ip4/127.0.0.{}/tcp/{}", n, n))
+                assert_eq!(listen_addr.head().to_string(), format!("/ip4/127.0.0.{}/tcp/{}", n, n))
             })
         }
 
         // Doing it again yields them in the same order
         for n in (0..4).rev() {
             assert_matches!(ls.poll(), Async::Ready(ListenersEvent::Incoming{listen_addr, ..}) => {
-                assert_eq!(listen_addr.to_string(), format!("/ip4/127.0.0.{}/tcp/{}", n, n))
+                assert_eq!(listen_addr.head().to_string(), format!("/ip4/127.0.0.{}/tcp/{}", n, n))
             })
         }
 
@@ -492,13 +493,13 @@ mod tests {
         set_listener_state(&mut ls, 3, ListenerState::Ok(Async::NotReady));
         for n in (0..3).rev() {
             assert_matches!(ls.poll(), Async::Ready(ListenersEvent::Incoming{listen_addr, ..}) => {
-                assert_eq!(listen_addr.to_string(), format!("/ip4/127.0.0.{}/tcp/{}", n, n))
+                assert_eq!(listen_addr.head().to_string(), format!("/ip4/127.0.0.{}/tcp/{}", n, n))
             })
         }
 
         for n in (0..3).rev() {
             assert_matches!(ls.poll(), Async::Ready(ListenersEvent::Incoming{listen_addr, ..}) => {
-                assert_eq!(listen_addr.to_string(), format!("/ip4/127.0.0.{}/tcp/{}", n, n))
+                assert_eq!(listen_addr.head().to_string(), format!("/ip4/127.0.0.{}/tcp/{}", n, n))
             })
         }
 
@@ -510,7 +511,7 @@ mod tests {
         );
         for n in (0..4).rev() {
             assert_matches!(ls.poll(), Async::Ready(ListenersEvent::Incoming{listen_addr, ..}) => {
-                assert_eq!(listen_addr.to_string(), format!("/ip4/127.0.0.{}/tcp/{}", n, n))
+                assert_eq!(listen_addr.head().to_string(), format!("/ip4/127.0.0.{}/tcp/{}", n, n))
             })
         }
     }
@@ -529,7 +530,7 @@ mod tests {
 
         for n in (0..4).rev() {
             assert_matches!(ls.poll(), Async::Ready(ListenersEvent::Incoming{listen_addr, ..}) => {
-                assert_eq!(listen_addr.to_string(), format!("/ip4/127.0.0.{}/tcp/{}", n, n));
+                assert_eq!(listen_addr.head().to_string(), format!("/ip4/127.0.0.{}/tcp/{}", n, n));
             });
             set_listener_state(&mut ls, 0, ListenerState::Ok(Async::NotReady));
         }

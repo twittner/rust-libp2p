@@ -53,7 +53,7 @@ use std::fmt;
 use std::io::{Error as IoError, Read, Write};
 use std::net::SocketAddr;
 use std::time::Duration;
-use swarm::Transport;
+use swarm::{MultiaddrSeq, Transport};
 use tk_listen::{ListenExt, SleepOnError};
 use tokio_io::{AsyncRead, AsyncWrite};
 use tokio_tcp::{ConnectFuture, Incoming, TcpListener, TcpStream};
@@ -134,7 +134,7 @@ impl Transport for TcpConfig {
     type ListenerUpgrade = FutureResult<Self::Output, IoError>;
     type Dial = TcpDialFut;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         if let Ok(socket_addr) = multiaddr_to_socketaddr(&addr) {
             let listener = TcpListener::bind(&socket_addr);
             // We need to build the `Multiaddr` to return from this function. If an error happened,
@@ -161,7 +161,7 @@ impl Transport for TcpConfig {
                     inner,
                     config: self,
                 },
-                new_addr,
+                MultiaddrSeq::singleton(new_addr)
             ))
         } else {
             Err((self, addr))
@@ -501,7 +501,7 @@ mod tests {
         assert!(addr.to_string().contains("tcp/0"));
 
         let (_, new_addr) = tcp.listen_on(addr).unwrap();
-        assert!(!new_addr.to_string().contains("tcp/0"));
+        assert!(new_addr.iter().find(|a| a.to_string().contains("tcp/0")).is_none());
     }
 
     #[test]
@@ -512,7 +512,7 @@ mod tests {
         assert!(addr.to_string().contains("tcp/0"));
 
         let (_, new_addr) = tcp.listen_on(addr).unwrap();
-        assert!(!new_addr.to_string().contains("tcp/0"));
+        assert!(new_addr.iter().find(|a| a.to_string().contains("tcp/0")).is_none());
     }
 
     #[test]

@@ -28,7 +28,7 @@ use futures::{
     stream,
 };
 use std::io;
-use {Multiaddr, PeerId, Transport};
+use {Multiaddr, PeerId, Transport, MultiaddrSeq};
 use tests::dummy_muxer::DummyMuxer;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -72,10 +72,7 @@ impl Transport for DummyTransport {
     type ListenerUpgrade = FutureResult<Self::Output, io::Error>;
     type Dial = Box<Future<Item = Self::Output, Error = io::Error> + Send>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)>
-    where
-        Self: Sized,
-    {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         let addr2 = addr.clone();
         match self.listener_state {
             ListenerState::Ok(async) => {
@@ -83,15 +80,15 @@ impl Transport for DummyTransport {
                 Ok(match async {
                     Async::NotReady => {
                         let stream = stream::poll_fn(|| Ok(Async::NotReady)).map(tupelize);
-                        (Box::new(stream), addr2)
+                        (Box::new(stream), MultiaddrSeq::singleton(addr2))
                     }
                     Async::Ready(Some(tup)) => {
                         let stream = stream::poll_fn(move || Ok( Async::Ready(Some(tup.clone()) ))).map(tupelize);
-                        (Box::new(stream), addr2)
+                        (Box::new(stream), MultiaddrSeq::singleton(addr2))
                     }
                     Async::Ready(None) => {
                         let stream = stream::empty();
-                        (Box::new(stream), addr2)
+                        (Box::new(stream), MultiaddrSeq::singleton(addr2))
                     }
                 })
             }

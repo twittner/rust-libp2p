@@ -34,7 +34,7 @@ use crate::{
         node::Substream
     },
     nodes::listeners::{ListenersEvent, ListenersStream},
-    transport::Transport
+    transport::{MultiaddrSeq, Transport}
 };
 use fnv::FnvHashMap;
 use futures::{prelude::*, future};
@@ -93,7 +93,7 @@ where
     /// One of the listeners gracefully closed.
     ListenerClosed {
         /// Address of the listener which closed.
-        listen_addr: Multiaddr,
+        listen_addr: MultiaddrSeq,
         /// The listener which closed.
         listener: TTrans::Listener,
         /// The error that happened. `Ok` if gracefully closed.
@@ -109,7 +109,7 @@ where
     /// the connection unexpectedly closed.
     IncomingConnectionError {
         /// Address of the listener which received the connection.
-        listen_addr: Multiaddr,
+        listen_addr: MultiaddrSeq,
         /// Address used to send back data to the remote.
         send_back_addr: Multiaddr,
         /// The error that happened.
@@ -279,7 +279,7 @@ where TTrans: Transport
     /// The produced upgrade.
     upgrade: TTrans::ListenerUpgrade,
     /// Address of the listener which received the connection.
-    listen_addr: Multiaddr,
+    listen_addr: MultiaddrSeq,
     /// Address used to send back data to the remote.
     send_back_addr: Multiaddr,
     /// Reference to the `active_nodes` field of the swarm.
@@ -325,8 +325,8 @@ where TTrans: Transport
 {
     /// Address of the listener that received the connection.
     #[inline]
-    pub fn listen_addr(&self) -> &Multiaddr {
-        &self.listen_addr
+    pub fn listen_addr(&self) -> impl Iterator<Item = &Multiaddr> {
+        self.listen_addr.iter()
     }
 
     /// Address used to send back data to the dialer.
@@ -357,7 +357,7 @@ pub enum ConnectedPoint {
     /// We received the node.
     Listener {
         /// Address of the listener that received the connection.
-        listen_addr: Multiaddr,
+        listen_addr: MultiaddrSeq,
         /// Stack of protocols used to send back data to the remote.
         send_back_addr: Multiaddr,
     },
@@ -437,7 +437,7 @@ where
 
     /// Start listening on the given multiaddress.
     #[inline]
-    pub fn listen_on(&mut self, addr: Multiaddr) -> Result<Multiaddr, Multiaddr> {
+    pub fn listen_on(&mut self, addr: Multiaddr) -> Result<MultiaddrSeq, Multiaddr> {
         self.listeners.listen_on(addr)
     }
 

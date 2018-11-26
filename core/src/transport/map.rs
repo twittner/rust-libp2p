@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{nodes::raw_swarm::ConnectedPoint, transport::Transport};
+use crate::{nodes::raw_swarm::ConnectedPoint, transport::{MultiaddrSeq, Transport}};
 use futures::prelude::*;
 use multiaddr::Multiaddr;
 
@@ -43,7 +43,7 @@ where
     type ListenerUpgrade = MapFuture<T::ListenerUpgrade, F>;
     type Dial = MapFuture<T::Dial, F>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         match self.transport.listen_on(addr) {
             Ok((stream, listen_addr)) => {
                 let stream = MapStream {
@@ -80,7 +80,7 @@ where
 ///
 /// Maps a function over every stream item.
 #[derive(Clone, Debug)]
-pub struct MapStream<T, F> { stream: T, listen_addr: Multiaddr, fun: F }
+pub struct MapStream<T, F> { stream: T, listen_addr: MultiaddrSeq, fun: F }
 
 impl<T, F, A, B, X> Stream for MapStream<T, F>
 where

@@ -22,7 +22,7 @@
 
 use futures::prelude::*;
 use libp2p_core::{
-    Multiaddr, PeerId, PublicKey, muxing, Transport,
+    Multiaddr, MultiaddrSeq, PeerId, PublicKey, muxing, Transport,
     upgrade::{self, OutboundUpgradeApply, UpgradeError}
 };
 use protocol::{RemoteInfo, IdentifyProtocolConfig};
@@ -73,7 +73,7 @@ where
     type Dial = Box<Future<Item = Self::Output, Error = IoError> + Send>;
 
     #[inline]
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         Err((self, addr))
     }
 

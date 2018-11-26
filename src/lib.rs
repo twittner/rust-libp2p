@@ -168,7 +168,7 @@ mod transport_ext;
 pub mod simple;
 
 pub use self::core::{
-    Transport, PeerId, Swarm,
+    Transport, PeerId, Swarm, MultiaddrSeq,
     upgrade::{InboundUpgrade, InboundUpgradeExt, OutboundUpgrade, OutboundUpgradeExt}
 };
 pub use libp2p_core_derive::NetworkBehaviour;
@@ -235,7 +235,7 @@ impl Transport for CommonTransport {
     type Dial = <InnerImplementation as Transport>::Dial;
 
     #[inline]
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         match self.inner.inner.listen_on(addr) {
             Ok(res) => Ok(res),
             Err((inner, addr)) => {

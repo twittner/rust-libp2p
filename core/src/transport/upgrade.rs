@@ -21,7 +21,7 @@
 use futures::prelude::*;
 use multiaddr::Multiaddr;
 use crate::{
-    transport::Transport,
+    transport::{MultiaddrSeq, Transport},
     upgrade::{OutboundUpgrade, InboundUpgrade, UpgradeInfo, apply_inbound, apply_outbound}
 };
 use tokio_io::{AsyncRead, AsyncWrite};
@@ -69,7 +69,7 @@ where
         }
     }
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         let upgrade = self.upgrade;
         match self.inner.listen_on(addr) {
             Ok((inbound, addr)) => {

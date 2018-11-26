@@ -47,7 +47,7 @@ use multiaddr::{Protocol, Multiaddr};
 use std::fmt;
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 use std::net::IpAddr;
-use swarm::Transport;
+use swarm::{MultiaddrSeq, Transport};
 use tokio_dns::{CpuPoolResolver, Resolver};
 
 /// Represents the configuration for a DNS transport capability of libp2p.
@@ -103,7 +103,7 @@ where
     type Dial = Box<Future<Item = Self::Output, Error = IoError> + Send>;
 
     #[inline]
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         match self.inner.listen_on(addr) {
             Ok(r) => Ok(r),
             Err((inner, addr)) => Err((
@@ -226,7 +226,7 @@ mod tests {
     extern crate libp2p_tcp_transport;
     use self::libp2p_tcp_transport::TcpConfig;
     use futures::future;
-    use swarm::Transport;
+    use swarm::{MultiaddrSeq, Transport};
     use multiaddr::{Protocol, Multiaddr};
     use std::io::Error as IoError;
     use DnsConfig;
@@ -245,7 +245,7 @@ mod tests {
             fn listen_on(
                 self,
                 _addr: Multiaddr,
-            ) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+            ) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
                 unreachable!()
             }
 

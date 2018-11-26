@@ -537,7 +537,7 @@ mod tests {
             let transport = TcpConfig::new().with_upgrade(KademliaProtocolConfig);
 
             let future = transport
-                .dial(rx.recv().unwrap())
+                .dial(rx.recv().unwrap().head())
                 .unwrap_or_else(|_| panic!())
                 .and_then(|proto| proto.send(msg_client))
                 .map(|_| ());
