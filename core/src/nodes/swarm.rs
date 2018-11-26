@@ -27,7 +27,8 @@ use crate::{
         raw_swarm::{RawSwarm, RawSwarmEvent, ConnectedPoint}
     },
     protocols_handler::{NodeHandlerWrapper, ProtocolsHandler},
-    topology::Topology
+    topology::Topology,
+    transport::MultiaddrSeq
 };
 use futures::prelude::*;
 use std::{fmt, io, ops::{Deref, DerefMut}};
@@ -123,7 +124,7 @@ where TBehaviour: NetworkBehaviour,
     /// Returns an error if the address is not supported.
     /// On success, returns an alternative version of the address.
     #[inline]
-    pub fn listen_on(me: &mut Self, addr: Multiaddr) -> Result<Multiaddr, Multiaddr> {
+    pub fn listen_on(me: &mut Self, addr: Multiaddr) -> Result<MultiaddrSeq, Multiaddr> {
         me.raw_swarm.listen_on(addr)
     }
 

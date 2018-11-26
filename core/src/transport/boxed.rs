@@ -23,7 +23,7 @@ use multiaddr::Multiaddr;
 use std::fmt;
 use std::io::Error as IoError;
 use std::sync::Arc;
-use transport::Transport;
+use transport::{MultiaddrSeq, Transport};
 
 /// See the `Transport::boxed` method.
 #[inline]
@@ -46,7 +46,7 @@ pub type Incoming<O> = Box<Future<Item = (IncomingUpgrade<O>, Multiaddr), Error 
 pub type IncomingUpgrade<O> = Box<Future<Item = O, Error = IoError> + Send>;
 
 trait Abstract<O> {
-    fn listen_on(&self, addr: Multiaddr) -> Result<(Listener<O>, Multiaddr), Multiaddr>;
+    fn listen_on(&self, addr: Multiaddr) -> Result<(Listener<O>, MultiaddrSeq), Multiaddr>;
     fn dial(&self, addr: Multiaddr) -> Result<Dial<O>, Multiaddr>;
     fn nat_traversal(&self, server: &Multiaddr, observed: &Multiaddr) -> Option<Multiaddr>;
 }
@@ -58,7 +58,7 @@ where
     T::Listener: Send + 'static,
     T::ListenerUpgrade: Send + 'static,
 {
-    fn listen_on(&self, addr: Multiaddr) -> Result<(Listener<O>, Multiaddr), Multiaddr> {
+    fn listen_on(&self, addr: Multiaddr) -> Result<(Listener<O>, MultiaddrSeq), Multiaddr> {
         let (listener, new_addr) =
             Transport::listen_on(self.clone(), addr).map_err(|(_, addr)| addr)?;
         let fut = listener.map(|(upgrade, addr)| {
@@ -106,7 +106,7 @@ impl<O> Transport for Boxed<O> {
     type Dial = Dial<O>;
 
     #[inline]
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         match self.inner.listen_on(addr) {
             Ok(listen) => Ok(listen),
             Err(addr) => Err((self, addr)),

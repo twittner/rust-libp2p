@@ -31,7 +31,7 @@ extern crate log;
 extern crate tokio_timer;
 
 use futures::{Async, Future, Poll, Stream};
-use libp2p_core::{Multiaddr, Transport};
+use libp2p_core::{Multiaddr, MultiaddrSeq, Transport};
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 use std::time::Duration;
 use tokio_timer::Timeout;
@@ -89,7 +89,7 @@ where
     type ListenerUpgrade = TokioTimerMapErr<Timeout<InnerTrans::ListenerUpgrade>>;
     type Dial = TokioTimerMapErr<Timeout<InnerTrans::Dial>>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         match self.inner.listen_on(addr) {
             Ok((listener, addr)) => {
                 let listener = TimeoutListener {

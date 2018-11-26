@@ -19,12 +19,12 @@
 // DEALINGS IN THE SOFTWARE.
 
 use bytes::{Bytes, IntoBuf};
+use crate::transport::{MultiaddrSeq, Transport};
 use futures::{future::{self, FutureResult}, prelude::*, stream, sync::mpsc};
 use multiaddr::{Protocol, Multiaddr};
 use parking_lot::Mutex;
 use rw_stream_sink::RwStreamSink;
 use std::{io, sync::Arc};
-use Transport;
 
 /// Builds a new pair of `Transport`s. The dialer can reach the listener by dialing `/memory`.
 #[inline]
@@ -56,7 +56,7 @@ impl<T: IntoBuf + Send + 'static> Transport for Dialer<T> {
     type ListenerUpgrade = FutureResult<Self::Output, io::Error>;
     type Dial = Box<Future<Item=Self::Output, Error=io::Error> + Send>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         Err((self, addr))
     }
 
@@ -98,7 +98,7 @@ impl<T: IntoBuf + Send + 'static> Transport for Listener<T> {
     type ListenerUpgrade = FutureResult<Self::Output, io::Error>;
     type Dial = Box<Future<Item=Self::Output, Error=io::Error> + Send>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         if !is_memory_addr(&addr) {
             return Err((self, addr))
         }
@@ -109,7 +109,7 @@ impl<T: IntoBuf + Send + 'static> Transport for Listener<T> {
                 (future::ok(channel.into()), addr.clone())
             })
             .map_err(|()| unreachable!());
-        Ok((Box::new(stream), addr2))
+        Ok((Box::new(stream), MultiaddrSeq::singleton(addr2)))
     }
 
     #[inline]

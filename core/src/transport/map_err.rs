@@ -21,7 +21,7 @@
 use futures::prelude::*;
 use multiaddr::Multiaddr;
 use std::io::Error as IoError;
-use transport::Transport;
+use transport::{MultiaddrSeq, Transport};
 
 /// See `Transport::map_err`.
 #[derive(Debug, Copy, Clone)]
@@ -48,7 +48,7 @@ where
     type ListenerUpgrade = MapErrListenerUpgrade<T, F>;
     type Dial = MapErrDial<T, F>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         let map = self.map;
 
         match self.transport.listen_on(addr) {

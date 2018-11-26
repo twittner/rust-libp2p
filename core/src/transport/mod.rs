@@ -86,7 +86,7 @@ pub trait Transport {
     /// > **Note**: The reason why we need to change the `Multiaddr` on success is to handle
     /// >             situations such as turning `/ip4/127.0.0.1/tcp/0` into
     /// >             `/ip4/127.0.0.1/tcp/<actual port>`.
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)>
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)>
     where
         Self: Sized;
 
@@ -199,3 +199,53 @@ pub trait Transport {
         and_then::AndThen::new(self, upgrade)
     }
 }
+
+/// Sequence of `Multiaddr`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MultiaddrSeq {
+    head: Multiaddr,
+    tail: Vec<Multiaddr>
+}
+
+impl MultiaddrSeq {
+    pub fn singleton(a: Multiaddr) -> Self {
+        MultiaddrSeq {
+            head: a,
+            tail: Vec::new()
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        1 + self.tail.len()
+    }
+
+    pub fn head(&self) -> Multiaddr {
+        self.head.clone()
+    }
+
+    pub fn push(&mut self, a: Multiaddr) {
+        self.tail.push(a)
+    }
+
+    pub fn pop(&mut self) -> Option<Multiaddr> {
+        self.tail.pop()
+    }
+
+    pub fn replace_head(&mut self, a: Multiaddr) {
+        self.head = a
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Multiaddr> {
+        std::iter::once(&self.head).chain(self.tail.iter())
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Multiaddr> {
+        std::iter::once(&mut self.head).chain(self.tail.iter_mut())
+    }
+
+    // TODO: impl `IntoIterator` for `MultiaddrSeq`.
+    pub fn into_iter(self) -> impl IntoIterator<IntoIter = impl Iterator<Item = Multiaddr>> {
+        std::iter::once(self.head).chain(self.tail.into_iter())
+    }
+}
+

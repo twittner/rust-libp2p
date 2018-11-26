@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{nodes::raw_swarm::ConnectedPoint, transport::Transport};
+use crate::{nodes::raw_swarm::ConnectedPoint, transport::{MultiaddrSeq, Transport}};
 use futures::{future::Either, prelude::*};
 use multiaddr::Multiaddr;
 use std::io;
@@ -46,7 +46,7 @@ where
     type Dial = AndThenFuture<T::Dial, C, F::Future>;
 
     #[inline]
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         let (listening_stream, new_addr) = match self.transport.listen_on(addr) {
             Ok((l, new_addr)) => (l, new_addr),
             Err((transport, addr)) => {
@@ -98,7 +98,11 @@ where
 ///
 /// Applies a function to every stream item.
 #[derive(Debug, Clone)]
-pub struct AndThenStream<T, F> { stream: T, listen_addr: Multiaddr, fun: F }
+pub struct AndThenStream<T, F> {
+    stream: T,
+    listen_addr: MultiaddrSeq,
+    fun: F
+}
 
 impl<T, F, A, B, X> Stream for AndThenStream<T, F>
 where

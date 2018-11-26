@@ -25,7 +25,7 @@ use crate::{
     utility::{Peer, RelayAddr}
 };
 use futures::{future, stream, prelude::*};
-use libp2p_core::{transport::Transport, upgrade::apply_outbound};
+use libp2p_core::{transport::{MultiaddrSeq, Transport}, upgrade::apply_outbound};
 use log::{debug, info, trace};
 use multiaddr::Multiaddr;
 use peerstore::{PeerAccess, PeerId, Peerstore};
@@ -55,7 +55,7 @@ where
     type ListenerUpgrade = future::Empty<Self::Output, io::Error>;
     type Dial = Box<Future<Item=Self::Output, Error=io::Error> + Send>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         Err((self, addr))
     }
 

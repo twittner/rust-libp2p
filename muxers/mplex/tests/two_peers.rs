@@ -75,7 +75,7 @@ fn client_to_server_outbound() {
     let transport = TcpConfig::new().with_upgrade(multiplex::MplexConfig::new());
 
     let future = transport
-        .dial(rx.recv().unwrap())
+        .dial(rx.recv().unwrap().head())
         .unwrap()
         .and_then(|client| muxing::inbound_from_ref_and_wrap(Arc::new(client)))
         .map(|server| Framed::<_, bytes::BytesMut>::new(server.unwrap()))
@@ -127,7 +127,7 @@ fn client_to_server_inbound() {
     let transport = TcpConfig::new().with_upgrade(multiplex::MplexConfig::new());
 
     let future = transport
-        .dial(rx.recv().unwrap())
+        .dial(rx.recv().unwrap().head())
         .unwrap()
         .and_then(|client| muxing::outbound_from_ref_and_wrap(Arc::new(client)))
         .map(|server| Framed::<_, bytes::BytesMut>::new(server.unwrap()))

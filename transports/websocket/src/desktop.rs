@@ -22,7 +22,7 @@ use futures::{stream, Future, IntoFuture, Sink, Stream};
 use multiaddr::{Protocol, Multiaddr};
 use rw_stream_sink::RwStreamSink;
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
-use swarm::Transport;
+use swarm::{MultiaddrSeq, Transport};
 use tokio_io::{AsyncRead, AsyncWrite};
 use websocket::client::builder::ClientBuilder;
 use websocket::message::OwnedMessage;
@@ -74,7 +74,7 @@ where
     fn listen_on(
         self,
         original_addr: Multiaddr,
-    ) -> Result<(Self::Listener, Multiaddr), (Self, Multiaddr)> {
+    ) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
         let mut inner_addr = original_addr.clone();
         match inner_addr.pop() {
             Some(Protocol::Ws) => {}
@@ -84,7 +84,9 @@ where
         let (inner_listen, new_addr) = match self.transport.listen_on(inner_addr) {
             Ok((listen, mut new_addr)) => {
                 // Need to suffix `/ws` to the listening address.
-                new_addr.append(Protocol::Ws);
+                for a in new_addr.iter_mut() {
+                    a.append(Protocol::Ws)
+                }
                 (listen, new_addr)
             }
             Err((transport, _)) => {
@@ -97,7 +99,7 @@ where
             }
         };
 
-        debug!("Listening on {}", new_addr);
+        debug!("Listening on {:?}", new_addr);
 
         let listen = inner_listen.map::<_, fn(_) -> _>(|(stream, mut client_addr)| {
             // Need to suffix `/ws` to each client address.
@@ -274,13 +276,13 @@ mod tests {
             .clone()
             .listen_on("/ip4/127.0.0.1/tcp/0/ws".parse().unwrap())
             .unwrap();
-        assert!(addr.to_string().ends_with("/ws"));
-        assert!(!addr.to_string().ends_with("/0/ws"));
+        assert!(addr.iter().all(|a| a.to_string().ends_with("/ws")));
+        assert!(!addr.iter().any(|a| a.to_string().ends_with("/0/ws")));
         let listener = listener
             .into_future()
             .map_err(|(e, _)| e)
             .and_then(|(c, _)| c.unwrap().0);
-        let dialer = ws_config.clone().dial(addr).unwrap();
+        let dialer = ws_config.clone().dial(addr.head()).unwrap();
 
         let future = listener
             .select(dialer)
@@ -298,13 +300,13 @@ mod tests {
             .clone()
             .listen_on("/ip6/::1/tcp/0/ws".parse().unwrap())
             .unwrap();
-        assert!(addr.to_string().ends_with("/ws"));
-        assert!(!addr.to_string().ends_with("/0/ws"));
+        assert!(addr.iter().all(|a| a.to_string().ends_with("/ws")));
+        assert!(!addr.iter().any(|a| a.to_string().ends_with("/0/ws")));
         let listener = listener
             .into_future()
             .map_err(|(e, _)| e)
             .and_then(|(c, _)| c.unwrap().0);
-        let dialer = ws_config.clone().dial(addr).unwrap();
+        let dialer = ws_config.clone().dial(addr.head()).unwrap();
 
         let future = listener
             .select(dialer)
