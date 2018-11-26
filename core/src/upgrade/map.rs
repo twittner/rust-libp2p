@@ -229,6 +229,118 @@ where
     }
 }
 
+/// Wraps around an upgrade and applies a closure to the output.
+#[derive(Debug, Clone)]
+pub struct MapUpgrade<U, F> { upgrade: U, fun: F }
+
+impl<U, F> MapUpgrade<U, F> {
+    pub fn new(upgrade: U, fun: F) -> Self {
+        MapUpgrade { upgrade, fun }
+    }
+}
+
+impl<U, F> UpgradeInfo for MapUpgrade<U, F>
+where
+    U: UpgradeInfo
+{
+    type UpgradeId = U::UpgradeId;
+    type NamesIter = U::NamesIter;
+
+    fn protocol_names(&self) -> Self::NamesIter {
+        self.upgrade.protocol_names()
+    }
+}
+
+impl<C, U, F, T> InboundUpgrade<C> for MapUpgrade<U, F>
+where
+    U: InboundUpgrade<C>,
+    F: FnOnce(U::Output) -> T
+{
+    type Output = T;
+    type Error = U::Error;
+    type Future = MapFuture<U::Future, F>;
+
+    fn upgrade_inbound(self, sock: C, id: Self::UpgradeId) -> Self::Future {
+        MapFuture {
+            inner: self.upgrade.upgrade_inbound(sock, id),
+            map: Some(self.fun)
+        }
+    }
+}
+
+impl<C, U, F, T> OutboundUpgrade<C> for MapUpgrade<U, F>
+where
+    U: OutboundUpgrade<C>,
+    F: FnOnce(U::Output) -> T
+{
+    type Output = T;
+    type Error = U::Error;
+    type Future = MapFuture<U::Future, F>;
+
+    fn upgrade_outbound(self, sock: C, id: Self::UpgradeId) -> Self::Future {
+        MapFuture {
+            inner: self.upgrade.upgrade_outbound(sock, id),
+            map: Some(self.fun)
+        }
+    }
+}
+
+/// Wraps around an upgrade and applies a closure to the error.
+#[derive(Debug, Clone)]
+pub struct MapUpgradeErr<U, F> { upgrade: U, fun: F }
+
+impl<U, F> MapUpgradeErr<U, F> {
+    pub fn new(upgrade: U, fun: F) -> Self {
+        MapUpgradeErr { upgrade, fun }
+    }
+}
+
+impl<U, F> UpgradeInfo for MapUpgradeErr<U, F>
+where
+    U: UpgradeInfo
+{
+    type UpgradeId = U::UpgradeId;
+    type NamesIter = U::NamesIter;
+
+    fn protocol_names(&self) -> Self::NamesIter {
+        self.upgrade.protocol_names()
+    }
+}
+
+impl<C, U, F, T> InboundUpgrade<C> for MapUpgradeErr<U, F>
+where
+    U: InboundUpgrade<C>,
+    F: FnOnce(U::Error) -> T
+{
+    type Output = U::Output;
+    type Error = T;
+    type Future = MapErrFuture<U::Future, F>;
+
+    fn upgrade_inbound(self, sock: C, id: Self::UpgradeId) -> Self::Future {
+        MapErrFuture {
+            fut: self.upgrade.upgrade_inbound(sock, id),
+            fun: Some(self.fun)
+        }
+    }
+}
+
+impl<C, U, F, T> OutboundUpgrade<C> for MapUpgradeErr<U, F>
+where
+    U: OutboundUpgrade<C>,
+    F: FnOnce(U::Error) -> T
+{
+    type Output = U::Output;
+    type Error = T;
+    type Future = MapErrFuture<U::Future, F>;
+
+    fn upgrade_outbound(self, sock: C, id: Self::UpgradeId) -> Self::Future {
+        MapErrFuture {
+            fut: self.upgrade.upgrade_outbound(sock, id),
+            fun: Some(self.fun)
+        }
+    }
+}
+
 pub struct MapFuture<TInnerFut, TMap> {
     inner: TInnerFut,
     map: Option<TMap>,

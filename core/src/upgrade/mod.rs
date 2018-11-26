@@ -72,8 +72,12 @@ pub use self::{
     denied::DeniedUpgrade,
     either::EitherUpgrade,
     error::UpgradeError,
-    map::{MapInboundUpgrade, MapOutboundUpgrade, MapInboundUpgradeErr, MapOutboundUpgradeErr},
-    or::OrUpgrade,
+    map::{
+        MapUpgrade, MapUpgradeErr,
+        MapInboundUpgrade, MapInboundUpgradeErr,
+        MapOutboundUpgrade,MapOutboundUpgradeErr
+    },
+    or::{Or, OrUpgrade},
 };
 
 /// Common trait for upgrades that can be applied on inbound substreams, outbound substreams,
@@ -189,4 +193,40 @@ pub trait OutboundUpgradeExt<C>: OutboundUpgrade<C> {
 }
 
 impl<C, U: OutboundUpgrade<C>> OutboundUpgradeExt<C> for U {}
+
+
+pub trait Upgrade<C>: InboundUpgrade<C> + OutboundUpgrade<C> {
+    /// Returns a new object that wraps around `Self` and applies a closure to the `Output`.
+    fn map<F, O, T>(self, f: F) -> MapUpgrade<Self, F>
+    where
+        Self: Sized,
+        Self: InboundUpgrade<C, Output = O> + OutboundUpgrade<C, Output = O>,
+        F: FnOnce(O) -> T
+    {
+        MapUpgrade::new(self, f)
+    }
+
+    /// Returns a new object that wraps around `Self` and applies a closure to the `Error`.
+    fn map_err<F, E, T>(self, f: F) -> MapUpgradeErr<Self, F>
+    where
+        Self: Sized,
+        Self: InboundUpgrade<C, Error = E> + OutboundUpgrade<C, Error = E>,
+        F: FnOnce(E) -> T
+    {
+        MapUpgradeErr::new(self, f)
+    }
+
+    /// Returns a new object that combines `Self` and another upgrade to support both at the same
+    /// time.
+    fn or<U>(self, upgrade: U) -> Or<Self, U>
+    where
+        Self: Sized,
+        U: InboundUpgrade<C, Output = <Self as InboundUpgrade<C>>::Output, Error = <Self as InboundUpgrade<C>>::Error>,
+        U: OutboundUpgrade<C, Output = <Self as OutboundUpgrade<C>>::Output, Error = <Self as OutboundUpgrade<C>>::Error>
+    {
+        Or::new(self, upgrade)
+    }
+}
+
+impl<C, U: InboundUpgrade<C> + OutboundUpgrade<C>> Upgrade<C> for U {}
 

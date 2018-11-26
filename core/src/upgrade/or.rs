@@ -88,6 +88,69 @@ where
     }
 }
 
+/// Upgrade that combines two upgrades into one. Supports all the protocols supported by either
+/// sub-upgrade.
+///
+/// The protocols supported by the first element have a higher priority.
+#[derive(Debug, Clone)]
+pub struct Or<A, B>(A, B);
+
+impl<A, B> Or<A, B> {
+    /// Combines two upgrades into an `OrUpgrade`.
+    ///
+    /// The protocols supported by the first element have a higher priority.
+    pub fn new(a: A, b: B) -> Self {
+        Or(a, b)
+    }
+}
+
+impl<A, B> UpgradeInfo for Or<A, B>
+where
+    A: UpgradeInfo,
+    B: UpgradeInfo
+{
+    type UpgradeId = Either<A::UpgradeId, B::UpgradeId>;
+    type NamesIter = NamesIterChain<A::NamesIter, B::NamesIter>;
+
+    fn protocol_names(&self) -> Self::NamesIter {
+        NamesIterChain(self.0.protocol_names(), self.1.protocol_names())
+    }
+}
+
+impl<C, A, B, T, E> InboundUpgrade<C> for Or<A, B>
+where
+    A: InboundUpgrade<C, Output = T, Error = E>,
+    B: InboundUpgrade<C, Output = T, Error = E>,
+{
+    type Output = T;
+    type Error = E;
+    type Future = Either<A::Future, B::Future>;
+
+    fn upgrade_inbound(self, sock: C, id: Self::UpgradeId) -> Self::Future {
+        match id {
+            Either::A(id) => Either::A(self.0.upgrade_inbound(sock, id)),
+            Either::B(id) => Either::B(self.1.upgrade_inbound(sock, id))
+        }
+    }
+}
+
+impl<C, A, B, T, E> OutboundUpgrade<C> for Or<A, B>
+where
+    A: OutboundUpgrade<C, Output = T, Error = E>,
+    B: OutboundUpgrade<C, Output = T, Error = E>,
+{
+    type Output = T;
+    type Error = E;
+    type Future = Either<A::Future, B::Future>;
+
+    fn upgrade_outbound(self, sock: C, id: Self::UpgradeId) -> Self::Future {
+        match id {
+            Either::A(id) => Either::A(self.0.upgrade_outbound(sock, id)),
+            Either::B(id) => Either::B(self.1.upgrade_outbound(sock, id))
+        }
+    }
+}
+
 /// Iterator that combines the protocol names of twp upgrades.
 #[derive(Debug, Clone)]
 pub struct NamesIterChain<A, B>(A, B);
