@@ -19,7 +19,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    Transport, Multiaddr, PeerId, InboundUpgrade, OutboundUpgrade, UpgradeInfo,
+    Transport, Multiaddr, PeerId, InboundUpgrade, OutboundUpgrade, UpgradeInfo, MultiaddrSeq,
     muxing::StreamMuxer,
     nodes::{
         handled_node::NodeHandler,
@@ -27,8 +27,7 @@ use crate::{
         raw_swarm::{RawSwarm, RawSwarmEvent}
     },
     protocols_handler::{NodeHandlerWrapper, ProtocolsHandler},
-    topology::Topology,
-    transport::MultiaddrSeq
+    topology::Topology
 };
 use futures::prelude::*;
 use std::{fmt, io, ops::{Deref, DerefMut}};
@@ -126,7 +125,7 @@ where TBehaviour: NetworkBehaviour<TTopology>,
     /// Returns an error if the address is not supported.
     /// On success, returns an alternative version of the address.
     #[inline]
-    pub fn listen_on(me: &mut Self, addr: Multiaddr) -> Result<MultiaddrSeq, Multiaddr> {
+    pub fn listen_on(me: &mut Self, addr: Multiaddr) -> Result<(), Multiaddr> {
         me.raw_swarm.listen_on(addr)
     }
 
@@ -154,7 +153,7 @@ where TBehaviour: NetworkBehaviour<TTopology>,
 
     /// Returns an iterator that produces the list of addresses we're listening on.
     #[inline]
-    pub fn listeners(me: &Self) -> impl Iterator<Item = &Multiaddr> {
+    pub fn listeners(me: &Self) -> impl Iterator<Item = &MultiaddrSeq> {
         RawSwarm::listeners(&me.raw_swarm)
     }
 
@@ -225,6 +224,9 @@ where TBehaviour: NetworkBehaviour<TTopology>,
                     let handler = self.behaviour.new_handler();
                     incoming.accept(handler.into_node_handler());
                 },
+                // TODO: Maybe invoke some callback when a listener is ready?
+                Async::Ready(RawSwarmEvent::Listener { result: Ok(_), .. }) => (),
+                Async::Ready(RawSwarmEvent::Listener { result: Err(e), .. }) => return Err(e),
                 Async::Ready(RawSwarmEvent::ListenerClosed { .. }) => {},
                 Async::Ready(RawSwarmEvent::IncomingConnectionError { .. }) => {},
                 Async::Ready(RawSwarmEvent::DialError { .. }) => {},

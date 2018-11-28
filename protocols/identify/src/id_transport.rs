@@ -20,7 +20,7 @@
 
 //! Contains the `IdentifyTransport` type.
 
-use futures::prelude::*;
+use futures::{future, prelude::*, stream};
 use libp2p_core::{
     Multiaddr, MultiaddrSeq, PeerId, PublicKey, muxing, Transport,
     upgrade::{self, OutboundUpgradeApply, UpgradeError}
@@ -64,16 +64,15 @@ where
     TMuxer::Substream: Send + Sync + 'static,      // TODO: remove unnecessary bounds
     TMuxer::OutboundSubstream: Send + 'static,      // TODO: remove unnecessary bounds
     TTrans::Dial: Send + Sync + 'static,
-    TTrans::Listener: Send + 'static,
-    TTrans::ListenerUpgrade: Send + 'static,
 {
     type Output = (PeerId, TMuxer);
-    type Listener = Box<Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = IoError> + Send>;
-    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = IoError> + Send>;
+    type ListenOn = future::Empty<(Self::Listener, MultiaddrSeq), IoError>;
+    type Listener = stream::Empty<(Self::ListenerUpgrade, Multiaddr), IoError>;
+    type ListenerUpgrade = future::Empty<Self::Output, IoError>;
     type Dial = Box<Future<Item = Self::Output, Error = IoError> + Send>;
 
     #[inline]
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
         Err((self, addr))
     }
 

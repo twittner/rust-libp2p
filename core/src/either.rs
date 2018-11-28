@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{muxing::{Shutdown, StreamMuxer}, Multiaddr};
+use crate::{muxing::{Shutdown, StreamMuxer}, Multiaddr, MultiaddrSeq};
 use futures::prelude::*;
 use std::{fmt, io::{Error as IoError, Read, Write}};
 use tokio_io::{AsyncRead, AsyncWrite};
@@ -288,6 +288,28 @@ where
                 .map(|i| (i.map(|v| (v.map(|(o, addr)| (EitherFuture::First(o), addr)))))),
             EitherListenStream::Second(a) => a.poll()
                 .map(|i| (i.map(|v| (v.map(|(o, addr)| (EitherFuture::Second(o), addr)))))),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+#[must_use = "futures do nothing unless polled"]
+pub enum EitherListenOn<A, B> { A(A), B(B) }
+
+impl<A, B, ListenerA, ListenerB> Future for EitherListenOn<A, B>
+where
+    A: Future<Item = (ListenerA, MultiaddrSeq), Error = IoError>,
+    B: Future<Item = (ListenerB, MultiaddrSeq), Error = IoError>
+{
+    type Item = (EitherListenStream<ListenerA, ListenerB>, MultiaddrSeq);
+    type Error = IoError;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match self {
+            EitherListenOn::A(a) => a.poll()
+                .map(|a| a.map(|(l, m)| (EitherListenStream::First(l), m))),
+            EitherListenOn::B(b) => b.poll()
+                .map(|a| a.map(|(l, m)| (EitherListenStream::Second(l), m)))
         }
     }
 }

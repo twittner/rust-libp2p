@@ -86,11 +86,12 @@ impl UdsConfig {
 
 impl Transport for UdsConfig {
     type Output = UnixStream;
+    type ListenOn = FutureResult<(Self::Listener, MultiaddrSeq), IoError>;
     type Listener = Box<Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = IoError> + Send + Sync>;
     type ListenerUpgrade = FutureResult<Self::Output, IoError>;
     type Dial = Box<Future<Item = UnixStream, Error = IoError> + Send + Sync>;  // TODO: name this type
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
         if let Ok(path) = multiaddr_to_path(&addr) {
             let listener = UnixListener::bind(&path);
             // We need to build the `Multiaddr` to return from this function. If an error happened,
@@ -112,7 +113,7 @@ impl Transport for UdsConfig {
                     })
                 })
                 .flatten_stream();
-            Ok((Box::new(future), MultiaddrSeq::singleton(new_addr)))
+            Ok(future::ok((Box::new(future), MultiaddrSeq::singleton(new_addr))))
         } else {
             Err((self, addr))
         }
@@ -204,17 +205,19 @@ mod tests {
 
             let mut rt = Runtime::new().unwrap();
             let handle = rt.handle();
-            let listener = tcp.listen_on(addr2).unwrap().0.for_each(|(sock, _)| {
-                sock.and_then(|sock| {
-                    // Define what to do with the socket that just connected to us
-                    // Which in this case is read 3 bytes
-                    let handle_conn = tokio_io::io::read_exact(sock, [0; 3])
-                        .map(|(_, buf)| assert_eq!(buf, [1, 2, 3]))
-                        .map_err(|err| panic!("IO error {:?}", err));
+            let listener = tcp.listen_on(addr2).unwrap().and_then(|(listener, _)| {
+                listener.for_each(|(sock, _)| {
+                    sock.and_then(|sock| {
+                        // Define what to do with the socket that just connected to us
+                        // Which in this case is read 3 bytes
+                        let handle_conn = tokio_io::io::read_exact(sock, [0; 3])
+                            .map(|(_, buf)| assert_eq!(buf, [1, 2, 3]))
+                            .map_err(|err| panic!("IO error {:?}", err));
 
-                    // Spawn the future as a concurrent task
-                    handle.spawn(handle_conn).unwrap();
-                    Ok(())
+                        // Spawn the future as a concurrent task
+                        handle.spawn(handle_conn).unwrap();
+                        Ok(())
+                    })
                 })
             });
 

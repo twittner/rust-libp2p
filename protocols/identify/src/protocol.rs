@@ -276,6 +276,8 @@ mod tests {
 
             let (listener, addr) = transport
                 .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+                .unwrap()
+                .wait()
                 .unwrap();
 
             tx.send(addr).unwrap();

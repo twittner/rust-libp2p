@@ -230,12 +230,13 @@ impl CommonTransport {
 
 impl Transport for CommonTransport {
     type Output = <InnerImplementation as Transport>::Output;
+    type ListenOn = <InnerImplementation as Transport>::ListenOn;
     type Listener = <InnerImplementation as Transport>::Listener;
     type ListenerUpgrade = <InnerImplementation as Transport>::ListenerUpgrade;
     type Dial = <InnerImplementation as Transport>::Dial;
 
     #[inline]
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
         match self.inner.inner.listen_on(addr) {
             Ok(res) => Ok(res),
             Err((inner, addr)) => {

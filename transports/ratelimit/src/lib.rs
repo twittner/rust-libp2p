@@ -158,34 +158,31 @@ impl<T> Transport for RateLimited<T>
 where
     T: Transport + 'static,
     T::Dial: Send,
+    T::ListenOn: Send,
     T::Output: AsyncRead + AsyncWrite + Send,
 {
     type Output = Connection<T::Output>;
+    type ListenOn = Box<dyn Future<Item = (Self::Listener, MultiaddrSeq), Error = io::Error> + Send>; // TODO
     type Listener = Listener<T>;
     type ListenerUpgrade = ListenerUpgrade<T>;
     type Dial = Box<Future<Item = Connection<T::Output>, Error = io::Error> + Send>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)>
-    where
-        Self: Sized,
-    {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
         let r = self.rlimiter;
         let w = self.wlimiter;
-        self.value
-            .listen_on(addr)
-            .map(|(listener, a)| {
-                (
-                    Listener(RateLimited::from_parts(listener, r.clone(), w.clone())),
-                    a,
-                )
-            })
-            .map_err(|(transport, a)| (RateLimited::from_parts(transport, r, w), a))
+        match self.value.listen_on(addr) {
+            Ok(listen_on) => {
+                let future = listen_on
+                    .map(move |(listener, a)| {
+                        (Listener(RateLimited::from_parts(listener, r, w)), a)
+                    });
+                Ok(Box::new(future))
+            }
+            Err((value, addr)) => Err((RateLimited::from_parts(value, r, w), addr))
+        }
     }
 
-    fn dial(self, addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)>
-    where
-        Self: Sized,
-    {
+    fn dial(self, addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
         let r = self.rlimiter;
         let w = self.wlimiter;
         let r2 = r.clone();

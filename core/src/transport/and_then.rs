@@ -41,31 +41,17 @@ where
     F: IntoFuture<Item = O, Error = io::Error>
 {
     type Output = O;
+    type ListenOn = ListenOnFuture<T::ListenOn, C>;
     type Listener = AndThenStream<T::Listener, C>;
     type ListenerUpgrade = AndThenFuture<T::ListenerUpgrade, C, F::Future>;
     type Dial = AndThenFuture<T::Dial, C, F::Future>;
 
     #[inline]
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
-        let (listening_stream, new_addr) = match self.transport.listen_on(addr) {
-            Ok((l, new_addr)) => (l, new_addr),
-            Err((transport, addr)) => {
-                let builder = AndThen { transport, fun: self.fun };
-                return Err((builder, addr));
-            }
-        };
-
-        // Try to negotiate the protocol.
-        // Note that failing to negotiate a protocol will never produce a future with an error.
-        // Instead the `stream` will produce `Ok(Err(...))`.
-        // `stream` can only produce an `Err` if `listening_stream` produces an `Err`.
-        let stream = AndThenStream {
-            stream: listening_stream,
-            listen_addr: new_addr.clone(),
-            fun: self.fun
-        };
-
-        Ok((stream, new_addr))
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
+        match self.transport.listen_on(addr) {
+            Ok(listen_on) => Ok(ListenOnFuture { inner: listen_on, args: Some(self.fun) }),
+            Err((transport, addr)) => Err((AndThen { transport, fun: self.fun }, addr))
+        }
     }
 
     #[inline]
@@ -119,7 +105,7 @@ where
             Async::Ready(Some((future, addr))) => {
                 let f = self.fun.clone();
                 let p = ConnectedPoint::Listener {
-                    listen_addr: self.listen_addr.clone(),
+                    listen_addrs: self.listen_addr.clone(),
                     send_back_addr: addr.clone()
                 };
                 let future = AndThenFuture {
@@ -164,6 +150,32 @@ where
             };
 
             self.inner = Either::B(future);
+        }
+    }
+}
+
+/// Custom `Future` to avoid boxing.
+#[derive(Debug)]
+pub struct ListenOnFuture<T, F> {
+    inner: T,
+    args: Option<F>
+}
+
+impl<T, F, X> Future for ListenOnFuture<T, F>
+where
+    T: Future<Item = (X, MultiaddrSeq)>
+{
+    type Item = (AndThenStream<X, F>, MultiaddrSeq);
+    type Error = T::Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match self.inner.poll()? {
+            Async::NotReady => Ok(Async::NotReady),
+            Async::Ready((l, a)) => {
+                let f = self.args.take().expect("ListenOnFuture has not been completed");
+                let s = AndThenStream { stream: l, listen_addr: a.clone(), fun: f };
+                Ok(Async::Ready((s, a)))
+            }
         }
     }
 }

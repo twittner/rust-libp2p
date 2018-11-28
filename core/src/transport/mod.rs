@@ -62,6 +62,8 @@ pub trait Transport {
     /// The raw connection to a peer.
     type Output;
 
+    type ListenOn: Future<Item = (Self::Listener, MultiaddrSeq), Error = IoError>;
+
     /// The listener produces incoming connections.
     ///
     /// An item should be produced whenever a connection is received at the lowest level of the
@@ -86,7 +88,7 @@ pub trait Transport {
     /// > **Note**: The reason why we need to change the `Multiaddr` on success is to handle
     /// >             situations such as turning `/ip4/127.0.0.1/tcp/0` into
     /// >             `/ip4/127.0.0.1/tcp/<actual port>`.
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)>
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)>
     where
         Self: Sized;
 
@@ -118,6 +120,7 @@ pub trait Transport {
     fn boxed(self) -> boxed::Boxed<Self::Output>
     where Self: Sized + Clone + Send + Sync + 'static,
           Self::Dial: Send + 'static,
+          Self::ListenOn: Send + 'static,
           Self::Listener: Send + 'static,
           Self::ListenerUpgrade: Send + 'static,
     {
@@ -246,6 +249,18 @@ impl MultiaddrSeq {
     // TODO: impl `IntoIterator` for `MultiaddrSeq`.
     pub fn into_iter(self) -> impl IntoIterator<IntoIter = impl Iterator<Item = Multiaddr>> {
         std::iter::once(self.head).chain(self.tail.into_iter())
+    }
+}
+
+impl std::ops::Index<usize> for MultiaddrSeq {
+    type Output = Multiaddr;
+
+    fn index(&self, i: usize) -> &Self::Output {
+        if i == 0 {
+            &self.head
+        } else {
+            &self.tail[i]
+        }
     }
 }
 

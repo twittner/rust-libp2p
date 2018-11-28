@@ -39,20 +39,14 @@ where
     F: FnOnce(T::Output, ConnectedPoint) -> D + Clone
 {
     type Output = D;
+    type ListenOn = ListenOnFuture<T::ListenOn, F>;
     type Listener = MapStream<T::Listener, F>;
     type ListenerUpgrade = MapFuture<T::ListenerUpgrade, F>;
     type Dial = MapFuture<T::Dial, F>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
         match self.transport.listen_on(addr) {
-            Ok((stream, listen_addr)) => {
-                let stream = MapStream {
-                    stream,
-                    listen_addr: listen_addr.clone(),
-                    fun: self.fun
-                };
-                Ok((stream, listen_addr))
-            }
+            Ok(listen_on) => Ok(ListenOnFuture { inner: listen_on, args: Some(self.fun) }),
             Err((transport, addr)) => Err((Map { transport, fun: self.fun }, addr)),
         }
     }
@@ -96,7 +90,7 @@ where
             Async::Ready(Some((future, addr))) => {
                 let f = self.fun.clone();
                 let p = ConnectedPoint::Listener {
-                    listen_addr: self.listen_addr.clone(),
+                    listen_addrs: self.listen_addr.clone(),
                     send_back_addr: addr.clone()
                 };
                 let future = MapFuture {
@@ -132,6 +126,32 @@ where
         let item = try_ready!(self.inner.poll());
         let (f, a) = self.args.take().expect("MapFuture has already finished.");
         Ok(Async::Ready(f(item, a)))
+    }
+}
+
+/// Custom `Future` to avoid boxing.
+#[derive(Debug)]
+pub struct ListenOnFuture<T, F> {
+    inner: T,
+    args: Option<F>
+}
+
+impl<T, F, X> Future for ListenOnFuture<T, F>
+where
+    T: Future<Item = (X, MultiaddrSeq)>
+{
+    type Item = (MapStream<X, F>, MultiaddrSeq);
+    type Error = T::Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match self.inner.poll()? {
+            Async::NotReady => Ok(Async::NotReady),
+            Async::Ready((l, a)) => {
+                let f = self.args.take().expect("ListenOnFuture has not been completed");
+                let s = MapStream { stream: l, listen_addr: a.clone(), fun: f };
+                Ok(Async::Ready((s, a)))
+            }
+        }
     }
 }
 

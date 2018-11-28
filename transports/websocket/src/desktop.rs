@@ -60,98 +60,86 @@ where
     // TODO: this 'static is pretty arbitrary and is necessary because of the websocket library
     T: Transport + 'static,
     T::Dial: Send,
+    T::ListenOn: Send,
     T::Listener: Send,
     T::ListenerUpgrade: Send,
     // TODO: this Send is pretty arbitrary and is necessary because of the websocket library
     T::Output: AsyncRead + AsyncWrite + Send,
 {
     type Output = Box<AsyncStream + Send>;
+    type ListenOn = Box<dyn Future<Item = (Self::Listener, MultiaddrSeq), Error = IoError> + Send>;
     type Listener =
         stream::Map<T::Listener, fn((<T as Transport>::ListenerUpgrade, Multiaddr)) -> (Self::ListenerUpgrade, Multiaddr)>;
     type ListenerUpgrade = Box<Future<Item = Self::Output, Error = IoError> + Send>;
     type Dial = Box<Future<Item = Self::Output, Error = IoError> + Send>;
 
-    fn listen_on(
-        self,
-        original_addr: Multiaddr,
-    ) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
+    fn listen_on(self, original_addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
         let mut inner_addr = original_addr.clone();
         match inner_addr.pop() {
             Some(Protocol::Ws) => {}
             _ => return Err((self, original_addr)),
         };
 
-        let (inner_listen, new_addr) = match self.transport.listen_on(inner_addr) {
-            Ok((listen, mut new_addr)) => {
-                // Need to suffix `/ws` to the listening address.
-                for a in new_addr.iter_mut() {
-                    a.append(Protocol::Ws)
-                }
-                (listen, new_addr)
-            }
-            Err((transport, _)) => {
-                return Err((
-                    WsConfig {
-                        transport: transport,
-                    },
-                    original_addr,
-                ));
-            }
+        let listen_on = match self.transport.listen_on(inner_addr) {
+            Ok(listen_on) => listen_on,
+            Err((transport, _)) => return Err((WsConfig { transport: transport }, original_addr))
         };
 
-        debug!("Listening on {:?}", new_addr);
+        let listen_on = listen_on.map(|(listener, mut addrs)| {
+            for a in addrs.iter_mut() {
+                a.append(Protocol::Ws)
+            }
+            debug!("Listening on {:?}", addrs);
+            let listener = listener.map::<_, fn(_) -> _>(|(stream, mut client_addr)| {
+                // Need to suffix `/ws` to each client address.
+                client_addr.append(Protocol::Ws);
 
-        let listen = inner_listen.map::<_, fn(_) -> _>(|(stream, mut client_addr)| {
-            // Need to suffix `/ws` to each client address.
-            client_addr.append(Protocol::Ws);
+                // Upgrade the listener to websockets like the websockets library requires us to do.
+                let upgraded = stream.and_then(move |stream| {
+                    debug!("Incoming connection");
+                    stream
+                        .into_ws()
+                        .map_err(|e| IoError::new(IoErrorKind::Other, e.3))
+                        .and_then(|stream| {
+                            // Accept the next incoming connection.
+                            stream
+                                .accept()
+                                .map_err(|err| IoError::new(IoErrorKind::Other, err))
+                                .map(|(client, _http_headers)| {
+                                    debug!("Upgraded incoming connection to websockets");
 
-            // Upgrade the listener to websockets like the websockets library requires us to do.
-            let upgraded = stream.and_then(move |stream| {
-                debug!("Incoming connection");
+                                    // Plug our own API on top of the `websockets` API.
+                                    let framed_data = client
+                                        .map_err(|err| IoError::new(IoErrorKind::Other, err))
+                                        .sink_map_err(|err| IoError::new(IoErrorKind::Other, err))
+                                        .with(|data| Ok(OwnedMessage::Binary(data)))
+                                        .and_then(|recv| {
+                                            match recv {
+                                                OwnedMessage::Binary(data) => Ok(Some(data)),
+                                                OwnedMessage::Text(data) => Ok(Some(data.into_bytes())),
+                                                OwnedMessage::Close(_) => Ok(None),
+                                                // TODO: handle pings and pongs, which is freaking hard
+                                                //         for now we close the socket when that happens
+                                                _ => Ok(None)
+                                            }
+                                        })
+                                        // TODO: is there a way to merge both lines into one?
+                                        .take_while(|v| Ok(v.is_some()))
+                                        .map(|v| v.expect("we only take while this is Some"));
 
-                stream
-                    .into_ws()
-                    .map_err(|e| IoError::new(IoErrorKind::Other, e.3))
-                    .and_then(|stream| {
-                        // Accept the next incoming connection.
-                        stream
-                            .accept()
-                            .map_err(|err| IoError::new(IoErrorKind::Other, err))
-                            .map(|(client, _http_headers)| {
-                                debug!("Upgraded incoming connection to websockets");
-
-                                // Plug our own API on top of the `websockets` API.
-                                let framed_data = client
-                                    .map_err(|err| IoError::new(IoErrorKind::Other, err))
-                                    .sink_map_err(|err| IoError::new(IoErrorKind::Other, err))
-                                    .with(|data| Ok(OwnedMessage::Binary(data)))
-                                    .and_then(|recv| {
-                                        match recv {
-                                            OwnedMessage::Binary(data) => Ok(Some(data)),
-                                            OwnedMessage::Text(data) => Ok(Some(data.into_bytes())),
-                                            OwnedMessage::Close(_) => Ok(None),
-                                            // TODO: handle pings and pongs, which is freaking hard
-                                            //         for now we close the socket when that happens
-                                            _ => Ok(None)
-                                        }
-                                    })
-                                    // TODO: is there a way to merge both lines into one?
-                                    .take_while(|v| Ok(v.is_some()))
-                                    .map(|v| v.expect("we only take while this is Some"));
-
-                                let read_write = RwStreamSink::new(framed_data);
-                                Box::new(read_write) as Box<AsyncStream + Send>
-                            })
-                    })
-                    .map(|s| Box::new(Ok(s).into_future()) as Box<Future<Item = _, Error = _> + Send>)
-                    .into_future()
-                    .flatten()
+                                    let read_write = RwStreamSink::new(framed_data);
+                                    Box::new(read_write) as Box<AsyncStream + Send>
+                                })
+                        })
+                        .map(|s| Box::new(Ok(s).into_future()) as Box<Future<Item = _, Error = _> + Send>)
+                        .into_future()
+                        .flatten()
+                });
+                (Box::new(upgraded) as Box<Future<Item = _, Error = _> + Send>, client_addr)
             });
-
-            (Box::new(upgraded) as Box<Future<Item = _, Error = _> + Send>, client_addr)
+            (listener, addrs)
         });
-
-        Ok((listen, new_addr))
+        Ok(Box::new(listen_on) as Box<_>)
     }
 
     fn dial(self, original_addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
@@ -275,6 +263,8 @@ mod tests {
         let (listener, addr) = ws_config
             .clone()
             .listen_on("/ip4/127.0.0.1/tcp/0/ws".parse().unwrap())
+            .unwrap()
+            .wait()
             .unwrap();
         assert!(addr.iter().all(|a| a.to_string().ends_with("/ws")));
         assert!(!addr.iter().any(|a| a.to_string().ends_with("/0/ws")));
@@ -299,6 +289,8 @@ mod tests {
         let (listener, addr) = ws_config
             .clone()
             .listen_on("/ip6/::1/tcp/0/ws".parse().unwrap())
+            .unwrap()
+            .wait()
             .unwrap();
         assert!(addr.iter().all(|a| a.to_string().ends_with("/ws")));
         assert!(!addr.iter().any(|a| a.to_string().ends_with("/0/ws")));

@@ -90,10 +90,19 @@ pub enum RawSwarmEvent<'a, TTrans: 'a, TInEvent: 'a, TOutEvent: 'a, THandler: 'a
 where
     TTrans: Transport,
 {
+    /// One of the listener futures resolved.
+    Listener {
+        /// The multiaddress the listener was started with.
+        address: Multiaddr,
+        /// The future result, either the sequence of addresses the listener is
+        /// listening on, or the error that caused the listener to fail.
+        result: Result<MultiaddrSeq, std::io::Error>
+    },
+
     /// One of the listeners gracefully closed.
     ListenerClosed {
         /// Address of the listener which closed.
-        listen_addr: MultiaddrSeq,
+        listen_addrs: MultiaddrSeq,
         /// The listener which closed.
         listener: TTrans::Listener,
         /// The error that happened. `Ok` if gracefully closed.
@@ -109,7 +118,7 @@ where
     /// the connection unexpectedly closed.
     IncomingConnectionError {
         /// Address of the listener which received the connection.
-        listen_addr: MultiaddrSeq,
+        listen_addrs: MultiaddrSeq,
         /// Address used to send back data to the remote.
         send_back_addr: Multiaddr,
         /// The error that happened.
@@ -201,72 +210,67 @@ where
     TTrans: Transport,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        match *self {
-            RawSwarmEvent::ListenerClosed { ref listen_addr, listener: _, ref result } => {
-                f.debug_struct("ListenerClosed")
-                    .field("listen_addr", listen_addr)
+        match self {
+            RawSwarmEvent::Listener { address, result } =>
+                f.debug_struct("Listener")
+                    .field("address", address)
                     .field("result", result)
-                    .finish()
-            }
-            RawSwarmEvent::IncomingConnection( IncomingConnectionEvent { ref listen_addr, ref send_back_addr, .. } ) => {
+                    .finish(),
+            RawSwarmEvent::ListenerClosed { listen_addrs, listener: _, result } =>
+                f.debug_struct("ListenerClosed")
+                    .field("listen_addrs", listen_addrs)
+                    .field("result", result)
+                    .finish(),
+            RawSwarmEvent::IncomingConnection(IncomingConnectionEvent { listen_addrs, send_back_addr, .. }) =>
                 f.debug_struct("IncomingConnection")
-                    .field("listen_addr", listen_addr)
+                    .field("listen_addrs", listen_addrs)
                     .field("send_back_addr", send_back_addr)
-                    .finish()
-            }
-            RawSwarmEvent::IncomingConnectionError { ref listen_addr, ref send_back_addr, ref error} => {
+                    .finish(),
+            RawSwarmEvent::IncomingConnectionError { listen_addrs, send_back_addr, error} =>
                 f.debug_struct("IncomingConnectionError")
-                    .field("listen_addr", listen_addr)
+                    .field("listen_addrs", listen_addrs)
                     .field("send_back_addr", send_back_addr)
                     .field("error", error)
-                    .finish()
-            }
-            RawSwarmEvent::Connected { ref peer_id, ref endpoint } => {
+                    .finish(),
+            RawSwarmEvent::Connected { peer_id, endpoint } =>
                 f.debug_struct("Connected")
                     .field("peer_id", peer_id)
                     .field("endpoint", endpoint)
-                    .finish()
-            }
-            RawSwarmEvent::Replaced { ref peer_id, ref closed_endpoint, ref endpoint } => {
+                    .finish(),
+            RawSwarmEvent::Replaced { peer_id, closed_endpoint, endpoint } =>
                 f.debug_struct("Replaced")
                     .field("peer_id", peer_id)
                     .field("closed_endpoint", closed_endpoint)
                     .field("endpoint", endpoint)
-                    .finish()
-            }
-            RawSwarmEvent::NodeClosed { ref peer_id, ref endpoint } => {
+                    .finish(),
+            RawSwarmEvent::NodeClosed { peer_id, endpoint } =>
                 f.debug_struct("NodeClosed")
                     .field("peer_id", peer_id)
                     .field("endpoint", endpoint)
-                    .finish()
-            }
-            RawSwarmEvent::NodeError { ref peer_id, ref endpoint, ref error } => {
+                    .finish(),
+            RawSwarmEvent::NodeError { peer_id, endpoint, error } =>
                 f.debug_struct("NodeError")
                     .field("peer_id", peer_id)
                     .field("endpoint", endpoint)
                     .field("error", error)
-                    .finish()
-            }
-            RawSwarmEvent::DialError { ref remain_addrs_attempt, ref peer_id, ref multiaddr, ref error } => {
+                    .finish(),
+            RawSwarmEvent::DialError { remain_addrs_attempt, peer_id, multiaddr, error } =>
                 f.debug_struct("DialError")
                     .field("remain_addrs_attempt", remain_addrs_attempt)
                     .field("peer_id", peer_id)
                     .field("multiaddr", multiaddr)
                     .field("error", error)
-                    .finish()
-            }
-            RawSwarmEvent::UnknownPeerDialError { ref multiaddr, ref error, .. } => {
+                    .finish(),
+            RawSwarmEvent::UnknownPeerDialError { multiaddr, error, .. } =>
                 f.debug_struct("UnknownPeerDialError")
                     .field("multiaddr", multiaddr)
                     .field("error", error)
-                    .finish()
-            }
-            RawSwarmEvent::NodeEvent { ref peer_id, ref event } => {
+                    .finish(),
+            RawSwarmEvent::NodeEvent { peer_id, event } =>
                 f.debug_struct("NodeEvent")
                     .field("peer_id", peer_id)
                     .field("event", event)
                     .finish()
-            }
         }
     }
 }
@@ -279,7 +283,7 @@ where TTrans: Transport
     /// The produced upgrade.
     upgrade: TTrans::ListenerUpgrade,
     /// Address of the listener which received the connection.
-    listen_addr: MultiaddrSeq,
+    listen_addrs: MultiaddrSeq,
     /// Address used to send back data to the remote.
     send_back_addr: Multiaddr,
     /// Reference to the `active_nodes` field of the swarm.
@@ -325,8 +329,8 @@ where TTrans: Transport
 {
     /// Address of the listener that received the connection.
     #[inline]
-    pub fn listen_addr(&self) -> impl Iterator<Item = &Multiaddr> {
-        self.listen_addr.iter()
+    pub fn listen_addrs(&self) -> &MultiaddrSeq {
+        &self.listen_addrs
     }
 
     /// Address used to send back data to the dialer.
@@ -339,7 +343,7 @@ where TTrans: Transport
     #[inline]
     pub fn to_connected_point(&self) -> ConnectedPoint {
         ConnectedPoint::Listener {
-            listen_addr: self.listen_addr.clone(),
+            listen_addrs: self.listen_addrs.clone(),
             send_back_addr: self.send_back_addr.clone(),
         }
     }
@@ -357,7 +361,7 @@ pub enum ConnectedPoint {
     /// We received the node.
     Listener {
         /// Address of the listener that received the connection.
-        listen_addr: MultiaddrSeq,
+        listen_addrs: MultiaddrSeq,
         /// Stack of protocols used to send back data to the remote.
         send_back_addr: Multiaddr,
     },
@@ -437,13 +441,13 @@ where
 
     /// Start listening on the given multiaddress.
     #[inline]
-    pub fn listen_on(&mut self, addr: Multiaddr) -> Result<MultiaddrSeq, Multiaddr> {
+    pub fn listen_on(&mut self, addr: Multiaddr) -> Result<(), Multiaddr> {
         self.listeners.listen_on(addr)
     }
 
     /// Returns an iterator that produces the list of addresses we're listening on.
     #[inline]
-    pub fn listeners(&self) -> impl Iterator<Item = &Multiaddr> {
+    pub fn listeners(&self) -> impl Iterator<Item = &MultiaddrSeq> {
         self.listeners.listeners()
     }
 
@@ -455,15 +459,15 @@ where
     ///
     /// For each listener, calls `nat_traversal` with the observed address and returns the outcome.
     #[inline]
-    pub fn nat_traversal<'a>(
-        &'a self,
-        observed_addr: &'a Multiaddr,
-    ) -> impl Iterator<Item = Multiaddr> + 'a
-        where TMuxer: 'a,
-              THandler: 'a,
+    pub fn nat_traversal<'a>(&'a self, observed_addr: &'a Multiaddr)
+        -> impl Iterator<Item = Multiaddr> + 'a
+    where
+        TMuxer: 'a,
+        THandler: 'a
     {
-        self.listeners()
-            .flat_map(move |server| self.transport().nat_traversal(server, observed_addr))
+        self.listeners().flat_map(move |addrs| {
+            addrs.iter().flat_map(move |server| self.transport().nat_traversal(server, observed_addr))
+        })
     }
 
     /// Dials a multiaddress without knowing the peer ID we're going to obtain.
@@ -614,19 +618,21 @@ where
         // Start by polling the listeners for events.
         match self.listeners.poll() {
             Async::NotReady => (),
-            Async::Ready(ListenersEvent::Incoming { upgrade, listen_addr, send_back_addr }) => {
+            Async::Ready(ListenersEvent::Listener { address, result }) =>
+                return Async::Ready(RawSwarmEvent::Listener { address, result }),
+            Async::Ready(ListenersEvent::Incoming { upgrade, listen_addrs, send_back_addr }) => {
                 let event = IncomingConnectionEvent {
                     upgrade,
-                    listen_addr,
+                    listen_addrs,
                     send_back_addr,
                     active_nodes: &mut self.active_nodes,
                     other_reach_attempts: &mut self.reach_attempts.other_reach_attempts,
                 };
                 return Async::Ready(RawSwarmEvent::IncomingConnection(event));
             }
-            Async::Ready(ListenersEvent::Closed { listen_addr, listener, result }) => {
+            Async::Ready(ListenersEvent::Closed { listen_addrs, listener, result }) => {
                 return Async::Ready(RawSwarmEvent::ListenerClosed {
-                    listen_addr,
+                    listen_addrs,
                     listener,
                     result,
                 });
@@ -890,8 +896,8 @@ where TTrans: Transport
                     handler,
                 });
             }
-            ConnectedPoint::Listener { listen_addr, send_back_addr } => {
-                return (Default::default(), RawSwarmEvent::IncomingConnectionError { listen_addr, send_back_addr, error });
+            ConnectedPoint::Listener { listen_addrs, send_back_addr } => {
+                return (Default::default(), RawSwarmEvent::IncomingConnectionError { listen_addrs, send_back_addr, error });
             }
         }
     }
@@ -1259,9 +1265,12 @@ mod tests {
         let addr = "/ip4/127.0.0.1/tcp/1234".parse::<Multiaddr>().expect("bad multiaddr");
         let addr2 = addr.clone();
         assert!(raw_swarm.listen_on(addr).is_ok());
-        let listeners = raw_swarm.listeners().collect::<Vec<&Multiaddr>>();
+        assert_matches!(raw_swarm.poll(), Async::Ready(RawSwarmEvent::Listener { result, .. }) => {
+            assert!(result.is_ok())
+        });
+        let listeners = raw_swarm.listeners().collect::<Vec<&MultiaddrSeq>>();
         assert_eq!(listeners.len(), 1);
-        assert_eq!(listeners[0], &addr2);
+        assert_eq!(listeners[0][0], addr2);
     }
 
     #[test]
@@ -1278,6 +1287,12 @@ mod tests {
 
         raw_swarm.listen_on(addr1).unwrap();
         raw_swarm.listen_on(addr2).unwrap();
+
+        for _ in 0 .. 2 {
+            assert_matches!(raw_swarm.poll(), Async::Ready(RawSwarmEvent::Listener { result, .. }) => {
+                assert!(result.is_ok())
+            })
+        }
 
         let natted = raw_swarm
             .nat_traversal(&outside_addr1)
@@ -1336,6 +1351,10 @@ mod tests {
 
         let mut swarm = RawSwarm::<_, _, _, Handler>::new(transport);
         swarm.listen_on("/memory".parse().unwrap()).unwrap();
+
+        assert_matches!(swarm.poll(), Async::Ready(RawSwarmEvent::Listener { result, .. }) => {
+            assert!(result.is_ok())
+        });
 
         // no incoming yet
         assert_eq!(swarm.num_incoming_negotiated(), 0);
@@ -1464,6 +1483,9 @@ mod tests {
 
         let mut swarm = RawSwarm::<_, _, _, Handler>::new(transport);
         swarm.listen_on("/memory".parse().unwrap()).unwrap();
+        assert_matches!(swarm.poll(), Async::Ready(RawSwarmEvent::Listener { result, .. }) => {
+            assert!(result.is_ok())
+        });
 
         let mut rt = Runtime::new().unwrap();
         let swarm = Arc::new(Mutex::new(swarm));

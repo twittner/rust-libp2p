@@ -68,38 +68,36 @@ impl DummyTransport {
 }
 impl Transport for DummyTransport {
     type Output = (PeerId, DummyMuxer);
+    type ListenOn = FutureResult<(Self::Listener, MultiaddrSeq), io::Error>;
     type Listener = Box<Stream<Item=(Self::ListenerUpgrade, Multiaddr), Error=io::Error> + Send>;
     type ListenerUpgrade = FutureResult<Self::Output, io::Error>;
     type Dial = Box<Future<Item = Self::Output, Error = io::Error> + Send>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
         let addr2 = addr.clone();
         match self.listener_state {
             ListenerState::Ok(async) => {
                 let tupelize = move |stream| (future::ok(stream), addr.clone());
-                Ok(match async {
+                match async {
                     Async::NotReady => {
                         let stream = stream::poll_fn(|| Ok(Async::NotReady)).map(tupelize);
-                        (Box::new(stream), MultiaddrSeq::singleton(addr2))
+                        Ok(future::ok((Box::new(stream) as Box<_>, MultiaddrSeq::singleton(addr2))))
                     }
                     Async::Ready(Some(tup)) => {
                         let stream = stream::poll_fn(move || Ok( Async::Ready(Some(tup.clone()) ))).map(tupelize);
-                        (Box::new(stream), MultiaddrSeq::singleton(addr2))
+                        Ok(future::ok((Box::new(stream) as Box<_>, MultiaddrSeq::singleton(addr2))))
                     }
                     Async::Ready(None) => {
                         let stream = stream::empty();
-                        (Box::new(stream), MultiaddrSeq::singleton(addr2))
+                        Ok(future::ok((Box::new(stream) as Box<_>, MultiaddrSeq::singleton(addr2))))
                     }
-                })
+                }
             }
             ListenerState::Error => Err((self, addr2)),
         }
     }
 
-    fn dial(self, _addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)>
-    where
-        Self: Sized,
-    {
+    fn dial(self, _addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
         let peer_id = if let Some(peer_id) = self.next_peer_id {
             peer_id
         } else {

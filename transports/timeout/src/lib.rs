@@ -85,27 +85,23 @@ where
     InnerTrans: Transport,
 {
     type Output = InnerTrans::Output;
+    type ListenOn = ListenOnFuture<InnerTrans::ListenOn>;
     type Listener = TimeoutListener<InnerTrans::Listener>;
     type ListenerUpgrade = TokioTimerMapErr<Timeout<InnerTrans::ListenerUpgrade>>;
     type Dial = TokioTimerMapErr<Timeout<InnerTrans::Dial>>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
         match self.inner.listen_on(addr) {
-            Ok((listener, addr)) => {
-                let listener = TimeoutListener {
-                    inner: listener,
-                    timeout: self.incoming_timeout,
-                };
-
-                Ok((listener, addr))
-            }
+            Ok(listen_on) => Ok(ListenOnFuture {
+                inner: listen_on,
+                args: Some(self.incoming_timeout)
+            }),
             Err((inner, addr)) => {
                 let transport = TransportTimeout {
                     inner,
                     outgoing_timeout: self.outgoing_timeout,
                     incoming_timeout: self.incoming_timeout,
                 };
-
                 Err((transport, addr))
             }
         }
@@ -192,3 +188,30 @@ where
         })
     }
 }
+
+/// Custom `Future` to avoid boxing.
+#[derive(Debug)]
+pub struct ListenOnFuture<T> {
+    inner: T,
+    args: Option<Duration>
+}
+
+impl<T, X> Future for ListenOnFuture<T>
+where
+    T: Future<Item = (X, MultiaddrSeq)>
+{
+    type Item = (TimeoutListener<X>, MultiaddrSeq);
+    type Error = T::Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match self.inner.poll()? {
+            Async::NotReady => Ok(Async::NotReady),
+            Async::Ready((l, a)) => {
+                let f = self.args.take().expect("ListenOnFuture has not been completed.");
+                let s = TimeoutListener { inner: l, timeout: f };
+                Ok(Async::Ready((s, a)))
+            }
+        }
+    }
+}
+

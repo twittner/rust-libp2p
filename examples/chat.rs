@@ -54,10 +54,10 @@ use libp2p::{
     tokio_codec::{FramedRead, LinesCodec}
 };
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::init();
     // Create a random PeerId
-    let local_key = secio::SecioKeyPair::ed25519_generated().unwrap();
+    let local_key = secio::SecioKeyPair::ed25519_generated()?;
     let local_peer_id = local_key.to_peer_id();
     println!("Local peer id: {:?}", local_peer_id);
 
@@ -81,8 +81,11 @@ fn main() {
     };
 
     // Listen on all interfaces and whatever port the OS assigns
-    let addr = libp2p::Swarm::listen_on(&mut swarm, "/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
-    println!("Listening on {:?}", addr);
+    let addr = "/ip4/0.0.0.0/tcp/0".parse()?;
+    if let Err(addr) = libp2p::Swarm::listen_on(&mut swarm, addr) {
+        eprintln!("swarm could not listen on {}", addr);
+        std::process::exit(1)
+    }
 
     // Reach out to another node
     if let Some(to_dial) = std::env::args().nth(1) {
@@ -123,4 +126,6 @@ fn main() {
 
         Ok(Async::NotReady)
     }));
+
+    Ok(())
 }

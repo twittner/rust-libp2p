@@ -29,7 +29,7 @@ use libp2p_core::{transport::{MultiaddrSeq, Transport}, upgrade::apply_outbound}
 use log::{debug, info, trace};
 use multiaddr::Multiaddr;
 use peerstore::{PeerAccess, PeerId, Peerstore};
-use rand::{self, Rng};
+use rand::{self, seq::SliceRandom};
 use std::{io, iter::FromIterator, ops::Deref, sync::Arc};
 use tokio_io::{AsyncRead, AsyncWrite};
 
@@ -51,11 +51,12 @@ where
     for<'a> &'a S: Peerstore
 {
     type Output = T::Output;
+    type ListenOn = future::Empty<(Self::Listener, MultiaddrSeq), io::Error>;
     type Listener = stream::Empty<(Self::ListenerUpgrade, Multiaddr), io::Error>;
     type ListenerUpgrade = future::Empty<Self::Output, io::Error>;
     type Dial = Box<Future<Item=Self::Output, Error=io::Error> + Send>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
         Err((self, addr))
     }
 
@@ -130,7 +131,7 @@ where
         }
 
         // Try one relay after another and stick to the first working one.
-        rand::thread_rng().shuffle(&mut dials); // randomise to spread load
+        dials.shuffle(&mut rand::thread_rng()); // randomise to spread load
         let dest_peer = destination.id.clone();
         let future = stream::iter_ok(dials.into_iter())
             .and_then(|dial| dial)

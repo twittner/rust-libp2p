@@ -18,9 +18,9 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use either::{EitherListenStream, EitherOutput, EitherFuture};
+use either::{EitherListenStream, EitherOutput, EitherFuture, EitherListenOn};
 use multiaddr::Multiaddr;
-use transport::{MultiaddrSeq, Transport};
+use transport::Transport;
 
 /// Struct returned by `or_transport()`.
 #[derive(Debug, Copy, Clone)]
@@ -38,31 +38,36 @@ where
     B: Transport,
 {
     type Output = EitherOutput<A::Output, B::Output>;
+    type ListenOn = EitherListenOn<A::ListenOn, B::ListenOn>;
     type Listener = EitherListenStream<A::Listener, B::Listener>;
     type ListenerUpgrade = EitherFuture<A::ListenerUpgrade, B::ListenerUpgrade>;
     type Dial = EitherFuture<A::Dial, B::Dial>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
-        let (first, addr) = match self.0.listen_on(addr) {
-            Ok((connec, addr)) => return Ok((EitherListenStream::First(connec), addr)),
-            Err(err) => err,
-        };
-
-        match self.1.listen_on(addr) {
-            Ok((connec, addr)) => Ok((EitherListenStream::Second(connec), addr)),
-            Err((second, addr)) => Err((OrTransport(first, second), addr)),
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
+        match self.0.listen_on(addr) {
+            Ok(listen_on) => {
+                Ok(EitherListenOn::A(listen_on))
+            }
+            Err((listener0, addr)) => {
+                match self.1.listen_on(addr) {
+                    Ok(listen_on) => Ok(EitherListenOn::B(listen_on)),
+                    Err((listener1, addr)) => Err((OrTransport(listener0, listener1), addr))
+                }
+            }
         }
     }
 
     fn dial(self, addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
-        let (first, addr) = match self.0.dial(addr) {
-            Ok(connec) => return Ok(EitherFuture::First(connec)),
-            Err(err) => err,
-        };
-
-        match self.1.dial(addr) {
-            Ok(connec) => Ok(EitherFuture::Second(connec)),
-            Err((second, addr)) => Err((OrTransport(first, second), addr)),
+        match self.0.dial(addr) {
+            Ok(future) => {
+                Ok(EitherFuture::First(future))
+            }
+            Err((dialer0, addr)) => {
+                match self.1.dial(addr) {
+                    Ok(future) => Ok(EitherFuture::Second(future)),
+                    Err((dialer1, addr)) => Err((OrTransport(dialer0, dialer1), addr))
+                }
+            }
         }
     }
 

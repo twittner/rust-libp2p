@@ -52,11 +52,12 @@ impl<T> Clone for Dialer<T> {
 
 impl<T: IntoBuf + Send + 'static> Transport for Dialer<T> {
     type Output = Channel<T>;
+    type ListenOn = future::Empty<(Self::Listener, MultiaddrSeq), io::Error>;
     type Listener = Box<Stream<Item=(Self::ListenerUpgrade, Multiaddr), Error=io::Error> + Send>;
     type ListenerUpgrade = FutureResult<Self::Output, io::Error>;
     type Dial = Box<Future<Item=Self::Output, Error=io::Error> + Send>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
         Err((self, addr))
     }
 
@@ -94,11 +95,12 @@ impl<T> Clone for Listener<T> {
 
 impl<T: IntoBuf + Send + 'static> Transport for Listener<T> {
     type Output = Channel<T>;
+    type ListenOn = FutureResult<(Self::Listener, MultiaddrSeq), io::Error>;
     type Listener = Box<Stream<Item=(Self::ListenerUpgrade, Multiaddr), Error=io::Error> + Send>;
     type ListenerUpgrade = FutureResult<Self::Output, io::Error>;
-    type Dial = Box<Future<Item=Self::Output, Error=io::Error> + Send>;
+    type Dial = future::Empty<Self::Output, io::Error>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
         if !is_memory_addr(&addr) {
             return Err((self, addr))
         }
@@ -109,7 +111,7 @@ impl<T: IntoBuf + Send + 'static> Transport for Listener<T> {
                 (future::ok(channel.into()), addr.clone())
             })
             .map_err(|()| unreachable!());
-        Ok((Box::new(stream), MultiaddrSeq::singleton(addr2)))
+        Ok(future::ok((Box::new(stream), MultiaddrSeq::singleton(addr2))))
     }
 
     #[inline]

@@ -24,6 +24,7 @@ use crate::{
     transport::{MultiaddrSeq, Transport},
     upgrade::{OutboundUpgrade, InboundUpgrade, UpgradeInfo, apply_inbound, apply_outbound}
 };
+use std::io;
 use tokio_io::{AsyncRead, AsyncWrite};
 
 #[derive(Debug, Copy, Clone)]
@@ -39,6 +40,7 @@ impl<D, U, O, E> Transport for Upgrade<D, U>
 where
     D: Transport,
     D::Dial: Send + 'static,
+    D::ListenOn: Send + 'static,
     D::Listener: Send + 'static,
     D::ListenerUpgrade: Send + 'static,
     D::Output: AsyncRead + AsyncWrite + Send + 'static,
@@ -51,38 +53,43 @@ where
     E: std::error::Error + Send + Sync + 'static
 {
     type Output = O;
-    type Listener = Box<Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = std::io::Error> + Send>;
-    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = std::io::Error> + Send>;
-    type Dial = Box<Future<Item = Self::Output, Error = std::io::Error> + Send>;
+    type ListenOn = Box<Future<Item = (Self::Listener, MultiaddrSeq), Error = io::Error> + Send>;
+    type Listener = Box<Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = io::Error> + Send>;
+    type ListenerUpgrade = Box<Future<Item = Self::Output, Error = io::Error> + Send>;
+    type Dial = Box<Future<Item = Self::Output, Error = io::Error> + Send>;
 
     fn dial(self, addr: Multiaddr) -> Result<Self::Dial, (Self, Multiaddr)> {
         let upgrade = self.upgrade;
         match self.inner.dial(addr.clone()) {
             Ok(outbound) => {
-                let future = outbound
-                    .and_then(move |x| apply_outbound(x, upgrade).map_err(|e| {
-                        std::io::Error::new(std::io::ErrorKind::Other, e)
-                    }));
+                let future = outbound.and_then(move |x| {
+                    apply_outbound(x, upgrade).map_err(|e| e.into_io_error())
+                });
                 Ok(Box::new(future))
             }
             Err((dialer, addr)) => Err((Upgrade::new(dialer, upgrade), addr))
         }
     }
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
         let upgrade = self.upgrade;
         match self.inner.listen_on(addr) {
-            Ok((inbound, addr)) => {
-                let stream = inbound
-                    .map(move |(future, addr)| {
-                        let upgrade = upgrade.clone();
-                        let future = future
-                            .and_then(move |x| apply_inbound(x, upgrade).map_err(|e| {
-                                 std::io::Error::new(std::io::ErrorKind::Other, e)
-                            }));
-                    (Box::new(future) as Box<_>, addr)
-                });
-                Ok((Box::new(stream), addr))
+            Ok(listen_on) => {
+                let listen_on = listen_on
+                    .map(move |(listener, addrs)| {
+                        let listener = listener
+                            .map(move |(future, addr)| {
+                                let upgrade = upgrade.clone();
+                                let future = future.and_then(move |x| {
+                                    apply_inbound(x, upgrade).map_err(|e| e.into_io_error())
+                                });
+                                let future: Box<dyn Future<Item = Self::Output, Error = io::Error> + Send> = Box::new(future);
+                                (future, addr)
+                            });
+                        let listener: Box<dyn Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = io::Error> + Send> = Box::new(listener);
+                        (listener, addrs)
+                    });
+                Ok(Box::new(listen_on) as Box<_>)
             }
             Err((listener, addr)) => Err((Upgrade::new(listener, upgrade), addr)),
         }

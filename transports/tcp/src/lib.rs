@@ -130,11 +130,12 @@ impl TcpConfig {
 
 impl Transport for TcpConfig {
     type Output = TcpTransStream;
+    type ListenOn = FutureResult<(Self::Listener, MultiaddrSeq), IoError>;
     type Listener = TcpListenStream;
     type ListenerUpgrade = FutureResult<Self::Output, IoError>;
     type Dial = TcpDialFut;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
         if let Ok(socket_addr) = multiaddr_to_socketaddr(&addr) {
             let listener = TcpListener::bind(&socket_addr);
             // We need to build the `Multiaddr` to return from this function. If an error happened,
@@ -156,13 +157,7 @@ impl Transport for TcpConfig {
             let inner = listener
                 .map_err(Some)
                 .map(move |l| l.incoming().sleep_on_error(sleep_on_error));
-            Ok((
-                TcpListenStream {
-                    inner,
-                    config: self,
-                },
-                MultiaddrSeq::singleton(new_addr)
-            ))
+            Ok(future::ok((TcpListenStream { inner, config: self }, MultiaddrSeq::singleton(new_addr))))
         } else {
             Err((self, addr))
         }
@@ -460,18 +455,20 @@ mod tests {
             let tcp = TcpConfig::new();
             let mut rt = Runtime::new().unwrap();
             let handle = rt.handle();
-            let listener = tcp.listen_on(addr).unwrap().0.for_each(|(sock, _)| {
-                sock.and_then(|sock| {
-                    // Define what to do with the socket that just connected to us
-                    // Which in this case is read 3 bytes
-                    let handle_conn = tokio_io::io::read_exact(sock, [0; 3])
-                        .map(|(_, buf)| assert_eq!(buf, [1, 2, 3]))
-                        .map_err(|err| panic!("IO error {:?}", err));
+            let listener = tcp.listen_on(addr).unwrap().and_then(|(listener, _)| {
+                listener.for_each(|(sock, _)| {
+                    sock.and_then(|sock| {
+                        // Define what to do with the socket that just connected to us
+                        // Which in this case is read 3 bytes
+                        let handle_conn = tokio_io::io::read_exact(sock, [0; 3])
+                            .map(|(_, buf)| assert_eq!(buf, [1, 2, 3]))
+                            .map_err(|err| panic!("IO error {:?}", err));
 
-                    // Spawn the future as a concurrent task
-                    handle.spawn(handle_conn).unwrap();
+                        // Spawn the future as a concurrent task
+                        handle.spawn(handle_conn).unwrap();
 
-                    Ok(())
+                        Ok(())
+                    })
                 })
             });
 
@@ -500,7 +497,7 @@ mod tests {
         let addr = "/ip4/127.0.0.1/tcp/0".parse::<Multiaddr>().unwrap();
         assert!(addr.to_string().contains("tcp/0"));
 
-        let (_, new_addr) = tcp.listen_on(addr).unwrap();
+        let (_, new_addr) = tcp.listen_on(addr).unwrap().wait().unwrap();
         assert!(new_addr.iter().find(|a| a.to_string().contains("tcp/0")).is_none());
     }
 
@@ -511,7 +508,7 @@ mod tests {
         let addr: Multiaddr = "/ip6/::1/tcp/0".parse().unwrap();
         assert!(addr.to_string().contains("tcp/0"));
 
-        let (_, new_addr) = tcp.listen_on(addr).unwrap();
+        let (_, new_addr) = tcp.listen_on(addr).unwrap().wait().unwrap();
         assert!(new_addr.iter().find(|a| a.to_string().contains("tcp/0")).is_none());
     }
 

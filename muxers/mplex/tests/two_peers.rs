@@ -47,7 +47,10 @@ fn client_to_server_outbound() {
 
         let (listener, addr) = transport
             .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .unwrap()
+            .wait()
             .unwrap();
+
         tx.send(addr).unwrap();
 
         let future = listener
@@ -99,7 +102,10 @@ fn client_to_server_inbound() {
 
         let (listener, addr) = transport
             .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .unwrap()
+            .wait()
             .unwrap();
+
         tx.send(addr).unwrap();
 
         let future = listener

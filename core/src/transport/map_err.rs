@@ -44,19 +44,15 @@ where
     F: FnOnce(IoError) -> IoError + Clone,
 {
     type Output = T::Output;
+    type ListenOn = ListenOnFuture<T, F>;
     type Listener = MapErrListener<T, F>;
     type ListenerUpgrade = MapErrListenerUpgrade<T, F>;
     type Dial = MapErrDial<T, F>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), (Self, Multiaddr)> {
-        let map = self.map;
-
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::ListenOn, (Self, Multiaddr)> {
         match self.transport.listen_on(addr) {
-            Ok((stream, listen_addr)) => {
-                let stream = MapErrListener { inner: stream, map };
-                Ok((stream, listen_addr))
-            }
-            Err((transport, addr)) => Err((MapErr { transport, map }, addr)),
+            Ok(listen_on) => Ok(ListenOnFuture { inner: listen_on, args: Some(self.map) }),
+            Err((transport, addr)) => Err((MapErr { transport, map: self.map }, addr))
         }
     }
 
@@ -158,3 +154,30 @@ where T: Transport,
         }
     }
 }
+
+/// Custom `Future` to avoid boxing.
+#[derive(Debug)]
+pub struct ListenOnFuture<T, F> where T: Transport {
+    inner: T::ListenOn,
+    args: Option<F>
+}
+
+impl<T, F> Future for ListenOnFuture<T, F>
+where
+    T: Transport
+{
+    type Item = (MapErrListener<T, F>, MultiaddrSeq);
+    type Error = IoError;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match self.inner.poll()? {
+            Async::NotReady => Ok(Async::NotReady),
+            Async::Ready((l, a)) => {
+                let f = self.args.take().expect("ListenOnFuture has not been completed");
+                let s = MapErrListener { inner: l, map: f };
+                Ok(Async::Ready((s, a)))
+            }
+        }
+    }
+}
+
