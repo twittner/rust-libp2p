@@ -20,7 +20,7 @@
 
 use futures::prelude::*;
 use libp2p_core::swarm::{ConnectedPoint, NetworkBehaviour, NetworkBehaviourAction};
-use libp2p_core::{protocols_handler::ProtocolsHandler, PeerId};
+use libp2p_core::{Multiaddr, MultiaddrSeq, protocols_handler::ProtocolsHandler, PeerId};
 use std::marker::PhantomData;
 use tokio_io::{AsyncRead, AsyncWrite};
 use void::Void;
@@ -59,6 +59,8 @@ where
         PingListenHandler::new()
     }
 
+    fn inject_listener(&mut self, _: Multiaddr, _: MultiaddrSeq) {}
+
     fn inject_connected(&mut self, _: PeerId, _: ConnectedPoint) {}
 
     fn inject_disconnected(&mut self, _: &PeerId, _: ConnectedPoint) {}
@@ -70,15 +72,9 @@ where
     ) {
     }
 
-    fn poll(
-        &mut self,
-        _: &mut TTopology,
-    ) -> Async<
-        NetworkBehaviourAction<
-            <Self::ProtocolsHandler as ProtocolsHandler>::InEvent,
-            Self::OutEvent,
-        >,
-    > {
+    fn poll(&mut self, _: &mut TTopology)
+        -> Async<NetworkBehaviourAction<<Self::ProtocolsHandler as ProtocolsHandler>::InEvent, Self::OutEvent>>
+    {
         Async::NotReady
     }
 }

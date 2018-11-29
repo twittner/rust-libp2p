@@ -56,6 +56,8 @@ fn build_struct(ast: &DeriveInput, data_struct: &DataStruct) -> TokenStream {
     let proto_select_ident = quote!{::libp2p::core::protocols_handler::ProtocolsHandlerSelect};
     let peer_id = quote!{::libp2p::core::PeerId};
     let connected_point = quote!{::libp2p::core::swarm::ConnectedPoint};
+    let multiaddr = quote!{::libp2p::core::Multiaddr};
+    let multiaddrseq = quote!{::libp2p::core::MultiaddrSeq};
 
     // Name of the type parameter that represents the substream.
     let substream_generic = {
@@ -132,6 +134,28 @@ fn build_struct(ast: &DeriveInput, data_struct: &DataStruct) -> TokenStream {
             }
         }
         out
+    };
+
+    // Build the list of statements to put in the body of `inject_listener()`.
+    let inject_listener_stmts = {
+        let num_fields = data_struct.fields.iter().filter(|f| !is_ignored(f)).count();
+        data_struct.fields.iter().enumerate().filter_map(move |(field_n, field)| {
+            if is_ignored(&field) {
+                return None;
+            }
+
+            Some(if field_n == num_fields - 1 {
+                match field.ident {
+                    Some(ref i) => quote!{ self.#i.inject_listener(addr, listens); },
+                    None => quote!{ self.#field_n.inject_listener(addr, listens); },
+                }
+            } else {
+                match field.ident {
+                    Some(ref i) => quote!{ self.#i.inject_listener(addr.clone(), listens.clone()); },
+                    None => quote!{ self.#field_n.inject_listener(addr.clone(), listens.clone()); },
+                }
+            })
+        })
     };
 
     // Build the list of statements to put in the body of `inject_connected()`.
@@ -340,6 +364,10 @@ fn build_struct(ast: &DeriveInput, data_struct: &DataStruct) -> TokenStream {
             fn new_handler(&mut self) -> Self::ProtocolsHandler {
                 use #protocols_handler;
                 #new_handler
+            }
+
+            fn inject_listener(&mut self, addr: #multiaddr, listens: #multiaddrseq) {
+                #(#inject_listener_stmts);*
             }
 
             #[inline]

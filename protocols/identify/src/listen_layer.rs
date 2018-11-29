@@ -20,7 +20,7 @@
 
 use futures::prelude::*;
 use libp2p_core::swarm::{ConnectedPoint, NetworkBehaviour, NetworkBehaviourAction};
-use libp2p_core::{protocols_handler::ProtocolsHandler, Multiaddr, PeerId};
+use libp2p_core::{MultiaddrSeq, protocols_handler::ProtocolsHandler, Multiaddr, PeerId};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use tokio_io::{AsyncRead, AsyncWrite};
@@ -72,6 +72,8 @@ where
         IdentifyListenHandler::new()
     }
 
+    fn inject_listener(&mut self, _: Multiaddr, _: MultiaddrSeq) {}
+
     fn inject_connected(&mut self, peer_id: PeerId, endpoint: ConnectedPoint) {
         let observed = match endpoint {
             ConnectedPoint::Dialer { address } => address,
@@ -97,15 +99,9 @@ where
         self.futures.push(future);
     }
 
-    fn poll(
-        &mut self,
-        _: &mut TTopology,
-    ) -> Async<
-        NetworkBehaviourAction<
-            <Self::ProtocolsHandler as ProtocolsHandler>::InEvent,
-            Self::OutEvent,
-        >,
-    > {
+    fn poll(&mut self, _: &mut TTopology)
+        -> Async< NetworkBehaviourAction< <Self::ProtocolsHandler as ProtocolsHandler>::InEvent, Self::OutEvent>>
+    {
         // Removes each future one by one, and pushes them back if they're not ready.
         for n in (0..self.futures.len()).rev() {
             let mut future = self.futures.swap_remove(n);

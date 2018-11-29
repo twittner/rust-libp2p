@@ -20,7 +20,7 @@
 
 use futures::prelude::*;
 use libp2p_core::swarm::{ConnectedPoint, NetworkBehaviour, NetworkBehaviourAction};
-use libp2p_core::{protocols_handler::ProtocolsHandler, Multiaddr, PeerId};
+use libp2p_core::{protocols_handler::ProtocolsHandler, Multiaddr, MultiaddrSeq, PeerId};
 use std::{collections::VecDeque, marker::PhantomData};
 use tokio_io::{AsyncRead, AsyncWrite};
 use {IdentifyInfo, PeriodicIdentification, PeriodicIdentificationEvent};
@@ -55,6 +55,8 @@ where
         PeriodicIdentification::new()
     }
 
+    fn inject_listener(&mut self, _: Multiaddr, _: MultiaddrSeq) {}
+
     fn inject_connected(&mut self, _: PeerId, _: ConnectedPoint) {}
 
     fn inject_disconnected(&mut self, _: &PeerId, _: ConnectedPoint) {}
@@ -77,15 +79,9 @@ where
         }
     }
 
-    fn poll(
-        &mut self,
-        _: &mut TTopology,
-    ) -> Async<
-        NetworkBehaviourAction<
-            <Self::ProtocolsHandler as ProtocolsHandler>::InEvent,
-            Self::OutEvent,
-        >,
-    > {
+    fn poll(&mut self, _: &mut TTopology)
+        -> Async< NetworkBehaviourAction< <Self::ProtocolsHandler as ProtocolsHandler>::InEvent, Self::OutEvent>>
+    {
         if let Some(event) = self.events.pop_front() {
             return Async::Ready(NetworkBehaviourAction::GenerateEvent(event));
         }

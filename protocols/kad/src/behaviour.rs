@@ -22,7 +22,7 @@ use fnv::{FnvHashMap, FnvHashSet};
 use futures::{prelude::*, stream};
 use handler::{KademliaHandler, KademliaHandlerEvent, KademliaHandlerIn, KademliaRequestId};
 use libp2p_core::swarm::{ConnectedPoint, NetworkBehaviour, NetworkBehaviourAction};
-use libp2p_core::{protocols_handler::ProtocolsHandler, topology::Topology, Multiaddr, PeerId};
+use libp2p_core::{protocols_handler::ProtocolsHandler, topology::Topology, Multiaddr, MultiaddrSeq, PeerId};
 use multihash::Multihash;
 use protocol::{KadConnectionType, KadPeer};
 use query::{QueryConfig, QueryState, QueryStatePollOut, QueryTarget};
@@ -277,6 +277,8 @@ where
         KademliaHandler::dial_and_listen()
     }
 
+    fn inject_listener(&mut self, _: Multiaddr, _: MultiaddrSeq) {}
+
     fn inject_connected(&mut self, id: PeerId, _: ConnectedPoint) {
         if let Some(pos) = self.pending_rpcs.iter().position(|(p, _)| p == &id) {
             let (_, rpc) = self.pending_rpcs.remove(pos);
@@ -362,15 +364,9 @@ where
         };
     }
 
-    fn poll(
-        &mut self,
-        topology: &mut TTopology,
-    ) -> Async<
-        NetworkBehaviourAction<
-            <Self::ProtocolsHandler as ProtocolsHandler>::InEvent,
-            Self::OutEvent,
-        >,
-    > {
+    fn poll(&mut self, topology: &mut TTopology)
+        -> Async< NetworkBehaviourAction< <Self::ProtocolsHandler as ProtocolsHandler>::InEvent, Self::OutEvent>>
+    {
         // Flush the changes to the topology that we want to make.
         for (peer_id, addr, connection_ty) in self.add_to_topology.drain() {
             topology.add_kad_discovered_address(peer_id, addr, connection_ty);

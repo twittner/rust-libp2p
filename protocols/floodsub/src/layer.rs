@@ -22,7 +22,7 @@ use cuckoofilter::CuckooFilter;
 use futures::prelude::*;
 use handler::FloodsubHandler;
 use libp2p_core::swarm::{ConnectedPoint, NetworkBehaviour, NetworkBehaviourAction};
-use libp2p_core::{protocols_handler::ProtocolsHandler, PeerId};
+use libp2p_core::{Multiaddr, MultiaddrSeq, protocols_handler::ProtocolsHandler, PeerId};
 use protocol::{FloodsubMessage, FloodsubRpc, FloodsubSubscription, FloodsubSubscriptionAction};
 use rand;
 use smallvec::SmallVec;
@@ -183,6 +183,8 @@ where
         FloodsubHandler::new()
     }
 
+    fn inject_listener(&mut self, _: Multiaddr, _: MultiaddrSeq) {}
+
     fn inject_connected(&mut self, id: PeerId, _: ConnectedPoint) {
         // We need to send our subscriptions to the newly-connected node.
         for topic in self.subscribed_topics.iter() {
@@ -206,11 +208,7 @@ where
         debug_assert!(was_in.is_some());
     }
 
-    fn inject_node_event(
-        &mut self,
-        propagation_source: PeerId,
-        event: FloodsubRpc,
-    ) {
+    fn inject_node_event(&mut self, propagation_source: PeerId, event: FloodsubRpc) {
         // Update connected peers topics
         for subscription in event.subscriptions {
             let mut remote_peer_topics = self.connected_peers
@@ -274,15 +272,9 @@ where
         }
     }
 
-    fn poll(
-        &mut self,
-        _: &mut TTopology,
-    ) -> Async<
-        NetworkBehaviourAction<
-            <Self::ProtocolsHandler as ProtocolsHandler>::InEvent,
-            Self::OutEvent,
-        >,
-    > {
+    fn poll(&mut self, _: &mut TTopology)
+        -> Async<NetworkBehaviourAction<<Self::ProtocolsHandler as ProtocolsHandler>::InEvent, Self::OutEvent>>
+    {
         if let Some(event) = self.events.pop_front() {
             return Async::Ready(event);
         }

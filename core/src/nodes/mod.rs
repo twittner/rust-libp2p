@@ -24,6 +24,7 @@ pub mod handled_node_tasks;
 pub mod listeners;
 pub mod node;
 pub mod raw_swarm;
+pub mod reporter;
 
 pub use self::node::Substream;
 pub use self::handled_node::{NodeHandlerEvent, NodeHandlerEndpoint};

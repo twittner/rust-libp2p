@@ -47,12 +47,41 @@ extern crate tokio;
 
 use futures::prelude::*;
 use libp2p::{
-    Transport,
-    core::upgrade::{self, OutboundUpgradeExt},
+    Transport, NetworkBehaviour,
+    core::{swarm::{reporter, NetworkBehaviour}, upgrade::{self, OutboundUpgradeExt}},
+    floodsub::FloodsubBehaviour,
     secio,
     mplex,
-    tokio_codec::{FramedRead, LinesCodec}
+    tokio_codec::{FramedRead, LinesCodec},
+    tokio_io::{AsyncRead, AsyncWrite}
 };
+
+#[derive(NetworkBehaviour)]
+struct Chat<Sub: AsyncRead + AsyncWrite> {
+    #[behaviour(handler = "log")]
+    logging: reporter::EventReporter<Sub>,
+
+    #[behaviour(handler = "on_floodsub")]
+    floodsub: FloodsubBehaviour<Sub>
+}
+
+impl<Sub: AsyncRead + AsyncWrite> Chat<Sub> {
+    fn log<Top>(&mut self, e: <reporter::EventReporter<Sub> as NetworkBehaviour<Top>>::OutEvent) {
+        match e {
+            reporter::Event::Listener { listens, ..} =>
+                println!("listening at {}", listens),
+            reporter::Event::Connected { peer, endpoint } =>
+                println!("new connection from {:?}, peer {:?}", endpoint, peer),
+            reporter::Event::Disconnected { peer, .. } =>
+                println!("peer {:?} disconnected", peer),
+            _ => ()
+        }
+    }
+
+    fn on_floodsub<Top>(&mut self, e: <FloodsubBehaviour<Sub> as NetworkBehaviour<Top>>::OutEvent) {
+        println!("Received message: {:?}", String::from_utf8_lossy(&e.data))
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::init();
@@ -75,8 +104,11 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Create a Swarm to manage peers and events
     let mut swarm = {
-        let mut behaviour = libp2p::floodsub::FloodsubBehaviour::new(local_peer_id);
-        behaviour.subscribe(floodsub_topic.clone());
+        let mut behaviour = Chat {
+            logging: reporter::EventReporter::new(),
+            floodsub: FloodsubBehaviour::new(local_peer_id)
+        };
+        behaviour.floodsub.subscribe(floodsub_topic.clone());
         libp2p::Swarm::new(transport, behaviour, libp2p::core::topology::MemoryTopology::empty())
     };
 
@@ -109,7 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::run(futures::future::poll_fn(move || -> Result<_, ()> {
         loop {
             match framed_stdin.poll().expect("Error while polling stdin") {
-                Async::Ready(Some(line)) => swarm.publish(&floodsub_topic, line.as_bytes()),
+                Async::Ready(Some(line)) => swarm.floodsub.publish(&floodsub_topic, line.as_bytes()),
                 Async::Ready(None) => panic!("Stdin closed"),
                 Async::NotReady => break,
             };
@@ -117,10 +149,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         loop {
             match swarm.poll().expect("Error while polling swarm") {
-                Async::Ready(Some(message)) => {
-                    println!("Received: {:?}", String::from_utf8_lossy(&message.data));
-                },
-                Async::Ready(None) | Async::NotReady => break,
+                Async::Ready(Some(())) => {}
+                Async::Ready(None) | Async::NotReady => break
             }
         }
 

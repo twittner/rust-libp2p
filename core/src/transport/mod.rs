@@ -252,6 +252,12 @@ impl MultiaddrSeq {
     }
 }
 
+impl std::fmt::Display for MultiaddrSeq {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:?}", self.iter().collect::<Vec<_>>())
+    }
+}
+
 impl std::ops::Index<usize> for MultiaddrSeq {
     type Output = Multiaddr;
 

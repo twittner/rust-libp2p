@@ -33,6 +33,7 @@ use futures::prelude::*;
 use std::{fmt, io, ops::{Deref, DerefMut}};
 
 pub use crate::nodes::raw_swarm::ConnectedPoint;
+pub use crate::nodes::reporter; // TODO: move elsewhere
 
 /// Contains the state of the network, plus the way it should behave.
 pub struct Swarm<TTransport, TBehaviour, TTopology>
@@ -224,8 +225,10 @@ where TBehaviour: NetworkBehaviour<TTopology>,
                     let handler = self.behaviour.new_handler();
                     incoming.accept(handler.into_node_handler());
                 },
-                // TODO: Maybe invoke some callback when a listener is ready?
-                Async::Ready(RawSwarmEvent::Listener { result: Ok(_), .. }) => (),
+                Async::Ready(RawSwarmEvent::Listener { address, result: Ok(addrs), .. }) => {
+                    self.behaviour.inject_listener(address, addrs)
+                }
+                // TODO: Maybe invoke some callback when a listener errors?
                 Async::Ready(RawSwarmEvent::Listener { result: Err(e), .. }) => return Err(e),
                 Async::Ready(RawSwarmEvent::ListenerClosed { .. }) => {},
                 Async::Ready(RawSwarmEvent::IncomingConnectionError { .. }) => {},
@@ -267,6 +270,10 @@ pub trait NetworkBehaviour<TTopology> {
 
     /// Builds a new `ProtocolsHandler`.
     fn new_handler(&mut self) -> Self::ProtocolsHandler;
+
+    /// Invoked for each listener that went live, passing in the address that was given to
+    /// `Swarm::listen_on` as well as the sequence of addresses it is listeing on.
+    fn inject_listener(&mut self, addr: Multiaddr, addrs: MultiaddrSeq);
 
     /// Indicates the behaviour that we connected to the node with the given peer id through the
     /// given endpoint.
@@ -323,3 +330,4 @@ pub enum NetworkBehaviourAction<TInEvent, TOutEvent> {
         event: TInEvent,
     },
 }
+
