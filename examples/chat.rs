@@ -79,7 +79,7 @@ impl<Sub: AsyncRead + AsyncWrite> Chat<Sub> {
     }
 
     fn on_floodsub<Top>(&mut self, e: <FloodsubBehaviour<Sub> as NetworkBehaviour<Top>>::OutEvent) {
-        println!("Received message: {:?}", String::from_utf8_lossy(&e.data))
+        println!("Received: '{:?}' from {:?}", String::from_utf8_lossy(&e.data), e.source)
     }
 }
 
