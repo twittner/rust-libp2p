@@ -34,14 +34,14 @@ pub use self::listener::{Listener, ListenerFuture};
 
 /// Message sent from the dialer to the listener.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DialerToListenerMessage {
+pub enum DialerToListenerMessage<N> {
     /// The dialer wants us to use a protocol.
     ///
     /// If this is accepted (by receiving back a `ProtocolAck`), then we immediately start
     /// communicating in the new protocol.
     ProtocolRequest {
         /// Name of the protocol.
-        name: Bytes,
+        name: N
     },
 
     /// The dialer requested the list of protocols that the listener supports.

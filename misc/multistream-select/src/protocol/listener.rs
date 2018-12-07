@@ -138,7 +138,7 @@ impl<R> Stream for Listener<R>
 where
     R: AsyncRead + AsyncWrite,
 {
-    type Item = DialerToListenerMessage;
+    type Item = DialerToListenerMessage<Bytes>;
     type Error = MultistreamSelectError;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
@@ -250,7 +250,7 @@ mod tests {
 
         let client = TcpStream::connect(&listener_addr)
             .from_err()
-            .and_then(move |stream| Dialer::new(stream));
+            .and_then(move |stream| Dialer::<_, Bytes>::new(stream));
 
         let mut rt = Runtime::new().unwrap();
         match rt.block_on(server.join(client)) {

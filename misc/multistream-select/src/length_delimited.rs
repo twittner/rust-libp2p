@@ -90,6 +90,16 @@ where
         assert_eq!(self.internal_buffer_pos, 0);
         self.inner.into_inner()
     }
+
+    pub fn cast<T>(self) -> LengthDelimited<T, S> {
+        LengthDelimited {
+            inner: self.inner,
+            internal_buffer: self.internal_buffer,
+            internal_buffer_pos: self.internal_buffer_pos,
+            state: self.state,
+            marker: PhantomData
+        }
+    }
 }
 
 impl<I, S> Stream for LengthDelimited<I, S>

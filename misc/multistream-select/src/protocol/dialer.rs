@@ -33,18 +33,19 @@ use unsigned_varint::decode;
 
 /// Wraps around a `AsyncRead+AsyncWrite`. Assumes that we're on the dialer's side. Produces and
 /// accepts messages.
-pub struct Dialer<R> {
-    inner: LengthDelimited<Bytes, R>,
+pub struct Dialer<R, N> {
+    inner: LengthDelimited<N, R>,
     handshake_finished: bool,
 }
 
-impl<R> Dialer<R>
+impl<R, N> Dialer<R, N>
 where
     R: AsyncRead + AsyncWrite,
+    N: AsRef<[u8]>
 {
     /// Takes ownership of a socket and starts the handshake. If the handshake succeeds, the
     /// future returns a `Dialer`.
-    pub fn new(inner: R) -> DialerFuture<R> {
+    pub fn new(inner: R) -> DialerFuture<R, N> {
         let sender = LengthDelimited::new(inner);
         DialerFuture {
             inner: sender.send(Bytes::from(MULTISTREAM_PROTOCOL_WITH_LF))
@@ -56,22 +57,30 @@ where
     pub fn into_inner(self) -> R {
         self.inner.into_inner()
     }
+
+    pub fn cast<T>(self) -> Dialer<R, T> {
+        Dialer {
+            inner: self.inner.cast(),
+            handshake_finished: self.handshake_finished
+        }
+    }
 }
 
-impl<R> Sink for Dialer<R>
+impl<R, N> Sink for Dialer<R, N>
 where
     R: AsyncRead + AsyncWrite,
+    N: AsRef<[u8]>
 {
-    type SinkItem = DialerToListenerMessage;
+    type SinkItem = DialerToListenerMessage<N>;
     type SinkError = MultistreamSelectError;
 
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
         match item {
             DialerToListenerMessage::ProtocolRequest { name } => {
-                if !name.starts_with(b"/") {
+                if !name.as_ref().starts_with(b"/") {
                     return Err(MultistreamSelectError::WrongProtocolName);
                 }
-                let mut protocol = Bytes::from(name);
+                let mut protocol = Bytes::from(name.as_ref()); // TODO: optimise
                 protocol.extend_from_slice(&[b'\n']);
                 match self.inner.start_send(protocol) {
                     Ok(AsyncSink::Ready) => Ok(AsyncSink::Ready),
@@ -79,7 +88,7 @@ where
                         let protocol_len = protocol.len();
                         protocol.truncate(protocol_len - 1);
                         Ok(AsyncSink::NotReady(
-                            DialerToListenerMessage::ProtocolRequest { name: protocol },
+                            DialerToListenerMessage::ProtocolRequest { name },
                         ))
                     }
                     Err(err) => Err(err.into()),
@@ -109,7 +118,7 @@ where
     }
 }
 
-impl<R> Stream for Dialer<R>
+impl<R> Stream for Dialer<R, Bytes>
 where
     R: AsyncRead + AsyncWrite,
 {
@@ -166,12 +175,12 @@ where
 }
 
 /// Future, returned by `Dialer::new`, which send the handshake and returns the actual `Dialer`.
-pub struct DialerFuture<T: AsyncWrite> {
-    inner: sink::Send<LengthDelimited<Bytes, T>>
+pub struct DialerFuture<T: AsyncWrite, N> {
+    inner: sink::Send<LengthDelimited<N, T>>
 }
 
-impl<T: AsyncWrite> Future for DialerFuture<T> {
-    type Item = Dialer<T>;
+impl<T: AsyncWrite, N> Future for DialerFuture<T, N> {
+    type Item = Dialer<T, N>;
     type Error = MultistreamSelectError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
