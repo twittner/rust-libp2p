@@ -68,7 +68,6 @@
 
 mod dialer_select;
 mod error;
-mod length_delimited;
 mod listener_select;
 mod tests;
 
