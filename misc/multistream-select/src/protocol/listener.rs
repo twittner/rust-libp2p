@@ -22,21 +22,21 @@
 
 use bytes::Bytes;
 use futures::{Async, AsyncSink, prelude::*, sink, stream::StreamFuture};
-use crate::length_delimited::LengthDelimited;
 use crate::protocol::DialerToListenerMessage;
 use crate::protocol::ListenerToDialerMessage;
 use crate::protocol::MultistreamSelectError;
 use crate::protocol::MULTISTREAM_PROTOCOL_WITH_LF;
 use log::{debug, trace};
 use std::mem;
+use tokio_codec::Framed;
 use tokio_io::{AsyncRead, AsyncWrite};
-use unsigned_varint::encode;
+use unsigned_varint::{encode, codec::UviBytes};
 
 
 /// Wraps around a `AsyncRead+AsyncWrite`. Assumes that we're on the listener's side. Produces and
 /// accepts messages.
 pub struct Listener<R> {
-    inner: LengthDelimited<Bytes, R>
+    inner: Framed<R, UviBytes>
 }
 
 impl<R> Listener<R>
@@ -46,7 +46,7 @@ where
     /// Takes ownership of a socket and starts the handshake. If the handshake succeeds, the
     /// future returns a `Listener`.
     pub fn new(inner: R) -> ListenerFuture<R> {
-        let inner = LengthDelimited::new(inner);
+        let inner = Framed::new(inner, UviBytes::default());
         ListenerFuture {
             inner: ListenerFutureState::Await { inner: inner.into_future() }
         }
@@ -153,7 +153,7 @@ where
             let frame_len = frame.len();
             let protocol = frame.split_to(frame_len - 1);
             Ok(Async::Ready(Some(
-                DialerToListenerMessage::ProtocolRequest { name: protocol },
+                DialerToListenerMessage::ProtocolRequest { name: protocol.freeze() },
             )))
         } else if frame == b"ls\n"[..] {
             Ok(Async::Ready(Some(
@@ -174,10 +174,10 @@ pub struct ListenerFuture<T: AsyncRead + AsyncWrite> {
 
 enum ListenerFutureState<T: AsyncRead + AsyncWrite> {
     Await {
-        inner: StreamFuture<LengthDelimited<Bytes, T>>
+        inner: StreamFuture<Framed<T, UviBytes>>
     },
     Reply {
-        sender: sink::Send<LengthDelimited<Bytes, T>>
+        sender: sink::Send<Framed<T, UviBytes>>
     },
     Undefined
 }
@@ -250,7 +250,7 @@ mod tests {
 
         let client = TcpStream::connect(&listener_addr)
             .from_err()
-            .and_then(move |stream| Dialer::<_, Bytes>::new(stream));
+            .and_then(move |stream| Dialer::new(stream));
 
         let mut rt = Runtime::new().unwrap();
         match rt.block_on(server.join(client)) {

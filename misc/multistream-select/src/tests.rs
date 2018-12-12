@@ -22,15 +22,13 @@
 
 #![cfg(test)]
 
+use crate::ProtocolChoiceError;
+use crate::dialer_select::{dialer_select_proto_parallel, dialer_select_proto_serial};
+use crate::protocol::{Dialer, DialerToListenerMessage, Listener, ListenerToDialerMessage};
+use crate::{dialer_select_proto, listener_select_proto};
+use futures::prelude::*;
 use tokio::runtime::current_thread::Runtime;
 use tokio_tcp::{TcpListener, TcpStream};
-use bytes::Bytes;
-use crate::dialer_select::{dialer_select_proto_parallel, dialer_select_proto_serial};
-use futures::Future;
-use futures::{Sink, Stream};
-use crate::protocol::{Dialer, DialerToListenerMessage, Listener, ListenerToDialerMessage};
-use crate::ProtocolChoiceError;
-use crate::{dialer_select_proto, listener_select_proto};
 
 /// Holds a `Vec` and satifies the iterator requirements of `listener_select_proto`.
 struct VecRefIntoIter<T>(Vec<T>);
@@ -68,7 +66,7 @@ fn negotiate_with_self_succeeds() {
         .from_err()
         .and_then(move |stream| Dialer::new(stream))
         .and_then(move |dialer| {
-            let p = Bytes::from("/hello/1.0.0");
+            let p = b"/hello/1.0.0";
             dialer.send(DialerToListenerMessage::ProtocolRequest { name: p })
         })
         .and_then(move |dialer| dialer.into_future().map_err(|(e, _)| e))
@@ -102,7 +100,7 @@ fn select_proto_basic() {
     let client = TcpStream::connect(&listener_addr)
         .from_err()
         .and_then(move |connec| {
-            let protos = vec![b"/proto3", b"/proto2"];
+            let protos = vec![&b"/proto3"[..], &b"/proto2"[..]];
             dialer_select_proto(connec, protos).map(|r| r.0)
         });
     let mut rt = Runtime::new().unwrap();
@@ -123,14 +121,14 @@ fn no_protocol_found() {
         .map(|s| s.0.unwrap())
         .map_err(|(e, _)| e.into())
         .and_then(move |connec| {
-            let protos = vec![b"/proto1", b"/proto2"];
+            let protos = vec![&b"/proto1"[..], &b"/proto2"[..]];
             listener_select_proto(connec, VecRefIntoIter(protos)).map(|r| r.0)
         });
 
     let client = TcpStream::connect(&listener_addr)
         .from_err()
         .and_then(move |connec| {
-            let protos = vec![b"/proto3", b"/proto4"];
+            let protos = vec![&b"/proto3"[..], &b"/proto4"[..]];
             dialer_select_proto(connec, protos).map(|r| r.0)
         });
     let mut rt = Runtime::new().unwrap();
@@ -158,7 +156,7 @@ fn select_proto_parallel() {
     let client = TcpStream::connect(&listener_addr)
         .from_err()
         .and_then(move |connec| {
-            let protos = vec![b"/proto3", b"/proto2"];
+            let protos = vec![&b"/proto3"[..], &b"/proto2"[..]];
             dialer_select_proto_parallel(connec, protos.into_iter()).map(|r| r.0)
         });
 
@@ -187,7 +185,7 @@ fn select_proto_serial() {
     let client = TcpStream::connect(&listener_addr)
         .from_err()
         .and_then(move |connec| {
-            let protos = vec![b"/proto3", b"/proto2"];
+            let protos = vec![&b"/proto3"[..], &b"/proto2"[..]];
             dialer_select_proto_serial(connec, protos.into_iter()).map(|r| r.0)
         });
 

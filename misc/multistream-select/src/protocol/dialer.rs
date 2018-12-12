@@ -20,35 +20,31 @@
 
 //! Contains the `Dialer` wrapper, which allows raw communications with a listener.
 
-use bytes::Bytes;
-use futures::{prelude::*, sink, Async, AsyncSink, StartSend, try_ready};
-use crate::length_delimited::LengthDelimited;
+use bytes::{Bytes, IntoBuf};
 use crate::protocol::DialerToListenerMessage;
 use crate::protocol::ListenerToDialerMessage;
 use crate::protocol::MultistreamSelectError;
 use crate::protocol::MULTISTREAM_PROTOCOL_WITH_LF;
+use futures::{prelude::*, sink, Async, AsyncSink, StartSend, try_ready};
+use tokio_codec::Framed;
 use tokio_io::{AsyncRead, AsyncWrite};
-use unsigned_varint::decode;
+use unsigned_varint::{decode, codec::UviBytes};
 
-
-/// Wraps around a `AsyncRead+AsyncWrite`. Assumes that we're on the dialer's side. Produces and
-/// accepts messages.
+/// Wraps around a `AsyncRead+AsyncWrite`.
+/// Assumes that we're on the dialer's side. Produces and accepts messages.
 pub struct Dialer<R, N> {
-    inner: LengthDelimited<N, R>,
-    handshake_finished: bool,
+    inner: Framed<R, UviBytes<N>>,
+    handshake_finished: bool
 }
 
-impl<R, N> Dialer<R, N>
+impl<'a, R> Dialer<R, &'a [u8]>
 where
     R: AsyncRead + AsyncWrite,
-    N: AsRef<[u8]>
 {
-    /// Takes ownership of a socket and starts the handshake. If the handshake succeeds, the
-    /// future returns a `Dialer`.
-    pub fn new(inner: R) -> DialerFuture<R, N> {
-        let sender = LengthDelimited::new(inner);
+    pub fn new(inner: R) -> DialerFuture<R, &'a [u8]> {
+        let sender = Framed::new(inner, UviBytes::default());
         DialerFuture {
-            inner: sender.send(Bytes::from(MULTISTREAM_PROTOCOL_WITH_LF))
+            inner: sender.send(MULTISTREAM_PROTOCOL_WITH_LF)
         }
     }
 
@@ -57,21 +53,13 @@ where
     pub fn into_inner(self) -> R {
         self.inner.into_inner()
     }
-
-    pub fn cast<T>(self) -> Dialer<R, T> {
-        Dialer {
-            inner: self.inner.cast(),
-            handshake_finished: self.handshake_finished
-        }
-    }
 }
 
-impl<R, N> Sink for Dialer<R, N>
+impl<'a, R> Sink for Dialer<R, &'a [u8]>
 where
-    R: AsyncRead + AsyncWrite,
-    N: AsRef<[u8]>
+    R: AsyncRead + AsyncWrite
 {
-    type SinkItem = DialerToListenerMessage<N>;
+    type SinkItem = DialerToListenerMessage<&'a [u8]>;
     type SinkError = MultistreamSelectError;
 
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
@@ -80,28 +68,21 @@ where
                 if !name.as_ref().starts_with(b"/") {
                     return Err(MultistreamSelectError::WrongProtocolName);
                 }
-                let mut protocol = Bytes::from(name.as_ref()); // TODO: optimise
-                protocol.extend_from_slice(&[b'\n']);
-                match self.inner.start_send(protocol) {
-                    Ok(AsyncSink::Ready) => Ok(AsyncSink::Ready),
-                    Ok(AsyncSink::NotReady(mut protocol)) => {
-                        let protocol_len = protocol.len();
-                        protocol.truncate(protocol_len - 1);
-                        Ok(AsyncSink::NotReady(
-                            DialerToListenerMessage::ProtocolRequest { name },
-                        ))
+                match self.inner.start_send(name)? {
+                    AsyncSink::Ready => Ok(AsyncSink::Ready),
+                    AsyncSink::NotReady(_) => {
+                        let item = DialerToListenerMessage::ProtocolRequest { name };
+                        Ok(AsyncSink::NotReady(item))
                     }
-                    Err(err) => Err(err.into()),
                 }
             }
-
             DialerToListenerMessage::ProtocolsListRequest => {
-                match self.inner.start_send(Bytes::from(&b"ls\n"[..])) {
-                    Ok(AsyncSink::Ready) => Ok(AsyncSink::Ready),
-                    Ok(AsyncSink::NotReady(_)) => Ok(AsyncSink::NotReady(
-                        DialerToListenerMessage::ProtocolsListRequest,
-                    )),
-                    Err(err) => Err(err.into()),
+                match self.inner.start_send(b"ls\n")? {
+                    AsyncSink::Ready => Ok(AsyncSink::Ready),
+                    AsyncSink::NotReady(_) => {
+                        let item = DialerToListenerMessage::ProtocolsListRequest;
+                        Ok(AsyncSink::NotReady(item))
+                    }
                 }
             }
         }
@@ -118,9 +99,10 @@ where
     }
 }
 
-impl<R> Stream for Dialer<R, Bytes>
+impl<R, N> Stream for Dialer<R, N>
 where
     R: AsyncRead + AsyncWrite,
+    N: IntoBuf
 {
     type Item = ListenerToDialerMessage;
     type Error = MultistreamSelectError;
@@ -147,7 +129,7 @@ where
                 let frame_len = frame.len();
                 let protocol = frame.split_to(frame_len - 1);
                 return Ok(Async::Ready(Some(ListenerToDialerMessage::ProtocolAck {
-                    name: protocol,
+                    name: protocol.freeze(),
                 })));
             } else if frame == b"na\n"[..] {
                 return Ok(Async::Ready(Some(ListenerToDialerMessage::NotAvailable)));
@@ -175,11 +157,11 @@ where
 }
 
 /// Future, returned by `Dialer::new`, which send the handshake and returns the actual `Dialer`.
-pub struct DialerFuture<T: AsyncWrite, N> {
-    inner: sink::Send<LengthDelimited<N, T>>
+pub struct DialerFuture<T: AsyncWrite, N: IntoBuf> {
+    inner: sink::Send<Framed<T, UviBytes<N>>>
 }
 
-impl<T: AsyncWrite, N> Future for DialerFuture<T, N> {
+impl<T: AsyncWrite, N: IntoBuf> Future for DialerFuture<T, N> {
     type Item = Dialer<T, N>;
     type Error = MultistreamSelectError;
 
@@ -192,12 +174,11 @@ impl<T: AsyncWrite, N> Future for DialerFuture<T, N> {
 
 #[cfg(test)]
 mod tests {
+    use crate::protocol::{Dialer, DialerToListenerMessage, MultistreamSelectError};
     use tokio::runtime::current_thread::Runtime;
     use tokio_tcp::{TcpListener, TcpStream};
-    use bytes::Bytes;
     use futures::Future;
     use futures::{Sink, Stream};
-    use crate::protocol::{Dialer, DialerToListenerMessage, MultistreamSelectError};
 
     #[test]
     fn wrong_proto_name() {
@@ -214,7 +195,7 @@ mod tests {
             .from_err()
             .and_then(move |stream| Dialer::new(stream))
             .and_then(move |dialer| {
-                let p = Bytes::from("invalid_name");
+                let p = b"invalid_name";
                 dialer.send(DialerToListenerMessage::ProtocolRequest { name: p })
             });
 
