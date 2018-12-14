@@ -20,12 +20,13 @@
 
 //! Contains lower-level structs to handle the multistream protocol.
 
-use bytes::Bytes;
+use bytes::{Bytes, IntoBuf};
 
 mod dialer;
 mod error;
 mod listener;
 
+const MULTISTREAM_PROTOCOL: &[u8] = b"/multistream/1.0.0";
 const MULTISTREAM_PROTOCOL_WITH_LF: &[u8] = b"/multistream/1.0.0\n";
 
 pub use self::dialer::{Dialer, DialerFuture};
@@ -50,10 +51,10 @@ pub enum DialerToListenerMessage<N> {
 
 /// Message sent from the listener to the dialer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ListenerToDialerMessage {
+pub enum ListenerToDialerMessage<N> {
     /// The protocol requested by the dialer is accepted. The socket immediately starts using the
     /// new protocol.
-    ProtocolAck { name: Bytes },
+    ProtocolAck { name: N },
 
     /// The protocol requested by the dialer is not supported or available.
     NotAvailable,
@@ -64,4 +65,35 @@ pub enum ListenerToDialerMessage {
         // TODO: use some sort of iterator
         list: Vec<Bytes>,
     },
+}
+
+pub(crate) struct RawSlice(*const u8, usize);
+
+// unsafe impl Send for RawSlice {}
+
+impl<'a> From<&'a [u8]> for RawSlice {
+    fn from(x: &'a[u8]) -> Self {
+        let n = x.len();
+        RawSlice(x.as_ptr(), n)
+    }
+}
+
+impl AsRef<[u8]> for RawSlice {
+    fn as_ref(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.0, self.1) }
+    }
+}
+
+impl IntoBuf for RawSlice {
+    type Buf = std::io::Cursor<RawSlice>;
+
+    fn into_buf(self) -> Self::Buf {
+        std::io::Cursor::new(self)
+    }
+}
+
+impl std::fmt::Debug for RawSlice {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:?}", self.as_ref())
+    }
 }

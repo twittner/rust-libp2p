@@ -18,7 +18,6 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use bytes::IntoBuf;
 use crate::nodes::ConnectedPoint;
 use crate::upgrade::{UpgradeInfo, InboundUpgrade, OutboundUpgrade, UpgradeError, ProtocolName};
 use futures::{future::Either, prelude::*};
@@ -226,11 +225,9 @@ type NameWrapIter<I> =
 /// Wrapper type to expose an `AsRef<[u8]>` impl for all types implementing `ProtocolName`.
 struct NameWrap<N>(N);
 
-impl<'a, N: ProtocolName> IntoBuf for &'a NameWrap<N> {
-    type Buf = std::io::Cursor<&'a [u8]>;
-
-    fn into_buf(self) -> Self::Buf {
-        self.0.protocol_name().into_buf()
+impl<N: ProtocolName> AsRef<[u8]> for NameWrap<N> {
+    fn as_ref(&self) -> &[u8] {
+        self.0.protocol_name()
     }
 }
 

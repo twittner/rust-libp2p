@@ -100,7 +100,7 @@ fn select_proto_basic() {
     let client = TcpStream::connect(&listener_addr)
         .from_err()
         .and_then(move |connec| {
-            let protos = vec![&b"/proto3"[..], &b"/proto2"[..]];
+            let protos = vec![b"/proto3", b"/proto2"];
             dialer_select_proto(connec, protos).map(|r| r.0)
         });
     let mut rt = Runtime::new().unwrap();
@@ -121,14 +121,14 @@ fn no_protocol_found() {
         .map(|s| s.0.unwrap())
         .map_err(|(e, _)| e.into())
         .and_then(move |connec| {
-            let protos = vec![&b"/proto1"[..], &b"/proto2"[..]];
+            let protos = vec![b"/proto1", b"/proto2"];
             listener_select_proto(connec, VecRefIntoIter(protos)).map(|r| r.0)
         });
 
     let client = TcpStream::connect(&listener_addr)
         .from_err()
         .and_then(move |connec| {
-            let protos = vec![&b"/proto3"[..], &b"/proto4"[..]];
+            let protos = vec![b"/proto3", b"/proto4"];
             dialer_select_proto(connec, protos).map(|r| r.0)
         });
     let mut rt = Runtime::new().unwrap();
@@ -156,7 +156,7 @@ fn select_proto_parallel() {
     let client = TcpStream::connect(&listener_addr)
         .from_err()
         .and_then(move |connec| {
-            let protos = vec![&b"/proto3"[..], &b"/proto2"[..]];
+            let protos = vec![b"/proto3", b"/proto2"];
             dialer_select_proto_parallel(connec, protos.into_iter()).map(|r| r.0)
         });
 
@@ -185,7 +185,7 @@ fn select_proto_serial() {
     let client = TcpStream::connect(&listener_addr)
         .from_err()
         .and_then(move |connec| {
-            let protos = vec![&b"/proto3"[..], &b"/proto2"[..]];
+            let protos = vec![b"/proto3", b"/proto2"];
             dialer_select_proto_serial(connec, protos.into_iter()).map(|r| r.0)
         });
 

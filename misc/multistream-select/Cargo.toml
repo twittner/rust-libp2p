@@ -16,7 +16,11 @@ log = "0.4"
 smallvec = "0.6"
 tokio-codec = "0.1"
 tokio-io = "0.1"
-unsigned-varint = { version = "0.2.1", features = ["codec"] }
+
+[dependencies.unsigned-varint]
+git = "https://github.com/twittner/unsigned-varint"
+branch = "prefix-suffix"
+features = ["codec"]
 
 [dev-dependencies]
 tokio = "0.1"
