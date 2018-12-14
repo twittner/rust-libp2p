@@ -23,7 +23,13 @@
 
 use bytes::Bytes;
 use futures::{prelude::*, sink, stream::StreamFuture};
-use crate::protocol::{DialerToListenerMessage, Listener, ListenerFuture, ListenerToDialerMessage};
+use crate::protocol::{
+    DialerToListenerMessage,
+    Listener,
+    ListenerFuture,
+    ListenerToDialerMessage,
+    RawSlice
+};
 use log::{debug, trace};
 use std::mem;
 use tokio_io::{AsyncRead, AsyncWrite};
@@ -70,15 +76,15 @@ where
     for<'a> &'a I: IntoIterator<Item = X>
 {
     AwaitListener {
-        listener_fut: ListenerFuture<R>,
+        listener_fut: ListenerFuture<R, RawSlice>,
         protocols: I
     },
     Incoming {
-        stream: StreamFuture<Listener<R>>,
+        stream: StreamFuture<Listener<R, RawSlice>>,
         protocols: I
     },
     Outgoing {
-        sender: sink::Send<Listener<R>>,
+        sender: sink::Send<Listener<R, RawSlice>>,
         protocols: I,
         outcome: Option<X>
     },
@@ -135,7 +141,9 @@ where
                             let mut send_back = ListenerToDialerMessage::NotAvailable;
                             for supported in &protocols {
                                 if name.as_ref() == supported.as_ref() {
-                                    send_back = ListenerToDialerMessage::ProtocolAck {name: name.clone()};
+                                    send_back = ListenerToDialerMessage::ProtocolAck {
+                                        name: name.as_ref().into()
+                                    };
                                     outcome = Some(supported);
                                     break;
                                 }

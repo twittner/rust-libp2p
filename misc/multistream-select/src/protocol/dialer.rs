@@ -20,11 +20,12 @@
 
 //! Contains the `Dialer` wrapper, which allows raw communications with a listener.
 
-use bytes::{Bytes, IntoBuf};
+use bytes::Bytes;
 use crate::protocol::DialerToListenerMessage;
 use crate::protocol::ListenerToDialerMessage;
 use crate::protocol::MultistreamSelectError;
-use crate::protocol::MULTISTREAM_PROTOCOL_WITH_LF;
+use crate::protocol::{MULTISTREAM_PROTOCOL, MULTISTREAM_PROTOCOL_WITH_LF};
+use crate::protocol::RawSlice;
 use futures::{prelude::*, sink, Async, AsyncSink, StartSend, try_ready};
 use tokio_codec::Framed;
 use tokio_io::{AsyncRead, AsyncWrite};
@@ -33,18 +34,23 @@ use unsigned_varint::{decode, codec::UviBytes};
 /// Wraps around a `AsyncRead+AsyncWrite`.
 /// Assumes that we're on the dialer's side. Produces and accepts messages.
 pub struct Dialer<R, N> {
-    inner: Framed<R, UviBytes<N>>,
-    handshake_finished: bool
+    inner: Framed<R, UviBytes<RawSlice>>,
+    handshake_finished: bool,
+    _mark: std::marker::PhantomData<N>
 }
 
-impl<'a, R> Dialer<R, &'a [u8]>
+impl<R, N> Dialer<R, N>
 where
-    R: AsyncRead + AsyncWrite,
+    R: AsyncRead + AsyncWrite
 {
-    pub fn new(inner: R) -> DialerFuture<R, &'a [u8]> {
-        let sender = Framed::new(inner, UviBytes::default());
+    pub fn new(inner: R) -> DialerFuture<R, N> {
+        let mut codec = UviBytes::default();
+        codec.set_max_len(std::u16::MAX as usize);
+        codec.set_suffix(b"\n");
+        let sender = Framed::new(inner, codec);
         DialerFuture {
-            inner: sender.send(MULTISTREAM_PROTOCOL_WITH_LF)
+            inner: sender.send(MULTISTREAM_PROTOCOL.into()),
+            _mark: std::marker::PhantomData
         }
     }
 
@@ -55,11 +61,12 @@ where
     }
 }
 
-impl<'a, R> Sink for Dialer<R, &'a [u8]>
+impl<R, N> Sink for Dialer<R, N>
 where
-    R: AsyncRead + AsyncWrite
+    R: AsyncRead + AsyncWrite,
+    N: AsRef<[u8]>
 {
-    type SinkItem = DialerToListenerMessage<&'a [u8]>;
+    type SinkItem = DialerToListenerMessage<N>;
     type SinkError = MultistreamSelectError;
 
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
@@ -68,7 +75,7 @@ where
                 if !name.as_ref().starts_with(b"/") {
                     return Err(MultistreamSelectError::WrongProtocolName);
                 }
-                match self.inner.start_send(name)? {
+                match self.inner.start_send(name.as_ref().into())? {
                     AsyncSink::Ready => Ok(AsyncSink::Ready),
                     AsyncSink::NotReady(_) => {
                         let item = DialerToListenerMessage::ProtocolRequest { name };
@@ -77,7 +84,7 @@ where
                 }
             }
             DialerToListenerMessage::ProtocolsListRequest => {
-                match self.inner.start_send(b"ls\n")? {
+                match self.inner.start_send(b"ls"[..].into())? {
                     AsyncSink::Ready => Ok(AsyncSink::Ready),
                     AsyncSink::NotReady(_) => {
                         let item = DialerToListenerMessage::ProtocolsListRequest;
@@ -101,10 +108,9 @@ where
 
 impl<R, N> Stream for Dialer<R, N>
 where
-    R: AsyncRead + AsyncWrite,
-    N: IntoBuf
+    R: AsyncRead + AsyncWrite
 {
-    type Item = ListenerToDialerMessage;
+    type Item = ListenerToDialerMessage<Bytes>;
     type Error = MultistreamSelectError;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
@@ -139,6 +145,7 @@ where
                 if num_protocols > 1000 { // TODO: configurable limit
                     return Err(MultistreamSelectError::VarintParseError("too many protocols".into()))
                 }
+                remaining = &remaining[1 ..]; // skip newline after num_protocols
                 let mut out = Vec::with_capacity(num_protocols);
                 for _ in 0 .. num_protocols {
                     let (len, rem) = decode::usize(remaining)?;
@@ -157,20 +164,24 @@ where
 }
 
 /// Future, returned by `Dialer::new`, which send the handshake and returns the actual `Dialer`.
-pub struct DialerFuture<T: AsyncWrite, N: IntoBuf> {
-    inner: sink::Send<Framed<T, UviBytes<N>>>
+pub struct DialerFuture<T: AsyncWrite, N> {
+    inner: sink::Send<Framed<T, UviBytes<RawSlice>>>,
+    _mark: std::marker::PhantomData<N>
 }
 
-impl<T: AsyncWrite, N: IntoBuf> Future for DialerFuture<T, N> {
+impl<T: AsyncWrite, N> Future for DialerFuture<T, N> {
     type Item = Dialer<T, N>;
     type Error = MultistreamSelectError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let inner = try_ready!(self.inner.poll());
-        Ok(Async::Ready(Dialer { inner, handshake_finished: false }))
+        Ok(Async::Ready(Dialer {
+            inner,
+            handshake_finished: false,
+            _mark: std::marker::PhantomData
+        }))
     }
 }
-
 
 #[cfg(test)]
 mod tests {
