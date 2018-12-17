@@ -24,12 +24,13 @@ use bytes::Bytes;
 use crate::protocol::DialerToListenerMessage;
 use crate::protocol::ListenerToDialerMessage;
 use crate::protocol::MultistreamSelectError;
+use crate::protocol::MULTISTREAM_PROTOCOL;
 use crate::protocol::MULTISTREAM_PROTOCOL_WITH_LF;
 use crate::protocol::Aio;
-use futures::{prelude::*, try_ready};
+use futures::prelude::*;
 use tokio_codec::FramedRead;
 use tokio_io::{AsyncRead, AsyncWrite, io::{ReadHalf, WriteHalf}};
-use unsigned_varint::{decode, codec::{UviBytes, UviWriter}};
+use unsigned_varint::{decode, codec::UviBytes, io::UviWriter};
 
 /// Wraps around a `AsyncRead + AsyncWrite`.
 /// Assumes that we're on the dialer's side. Produces and accepts messages.
@@ -37,16 +38,14 @@ pub struct Dialer<R, N> {
     stream: FramedRead<ReadHalf<R>, UviBytes>,
     sink: UviWriter<WriteHalf<R>>,
     handshake_finished: bool,
-    state: State<N>
+    state: State,
+    _mark: std::marker::PhantomData<N>
 }
 
-enum State<N> {
+#[derive(Debug)]
+enum State {
     Start,
-    Message {
-        item: DialerToListenerMessage<N>,
-        offset: usize
-    },
-    Newline
+    Message(usize)
 }
 
 impl<R, N> Dialer<R, N>
@@ -57,13 +56,16 @@ where
         let (reader, writer) = inner.split();
         let mut codec = UviBytes::default();
         codec.set_max_len(std::u16::MAX as usize);
+        let mut writer = UviWriter::new(writer);
+        writer.set_suffix(b"\n");
         let dialer = Dialer {
             stream: FramedRead::new(reader, codec),
-            sink: UviWriter::new(writer),
+            sink: writer,
             handshake_finished: false,
-            state: State::Start
+            state: State::Start,
+            _mark: std::marker::PhantomData
         };
-        DialerFuture { dialer, offset: 0 }
+        DialerFuture { dialer: Some(dialer), offset: 0 }
 
     }
 
@@ -85,11 +87,11 @@ where
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
         use crate::protocol::DialerToListenerMessage::*;
         loop {
-            match self.state {
-                State::Start => {
-                    self.state = State::Message { item, offset: 0 }
+            match (&item, &mut self.state) {
+                (_, State::Start) => {
+                    self.state = State::Message(0)
                 }
-                State::Message { item: ProtocolRequest { name }, ref mut offset } => {
+                (ProtocolRequest { name }, State::Message(offset)) => {
                     if !name.as_ref().starts_with(b"/") {
                         return Err(MultistreamSelectError::WrongProtocolName);
                     }
@@ -97,28 +99,21 @@ where
                         Async::Ready(n) => {
                             *offset += n;
                             if *offset >= name.as_ref().len() {
-                                self.state = State::Newline
+                                self.state = State::Start;
+                                return Ok(AsyncSink::Ready)
                             }
                         }
                         Async::NotReady => return Ok(AsyncSink::NotReady(item))
                     }
                 }
-                State::Message { item: ProtocolsListRequest, ref mut offset } => {
-                    match self.sink.poll_write(&b"ls\n"[*offset ..])? {
+                (ProtocolsListRequest, State::Message(offset)) => {
+                    match self.sink.poll_write(&b"ls"[*offset ..])? {
                         Async::Ready(n) => {
                             *offset += n;
-                            if *offset >= 3 {
-                                self.state = State::Start
+                            if *offset >= 2 {
+                                self.state = State::Start;
+                                return Ok(AsyncSink::Ready)
                             }
-                        }
-                        Async::NotReady => return Ok(AsyncSink::NotReady(item))
-                    }
-                }
-                State::Newline => {
-                    match self.sink.poll_write(b"\n")? {
-                        Async::Ready(0) => return Ok(AsyncSink::NotReady(item)),
-                        Async::Ready(_) => {
-                            self.state = State::Start
                         }
                         Async::NotReady => return Ok(AsyncSink::NotReady(item))
                     }
@@ -197,7 +192,7 @@ where
 
 /// Future, returned by `Dialer::new`, which send the handshake and returns the actual `Dialer`.
 pub struct DialerFuture<R, N> {
-    dialer: Dialer<R, N>,
+    dialer: Option<Dialer<R, N>>,
     offset: usize
 }
 
@@ -206,12 +201,14 @@ impl<R: AsyncWrite, N> Future for DialerFuture<R, N> {
     type Error = MultistreamSelectError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let mut d = self.dialer.take().unwrap();
         loop {
-            if self.offset >= MULTISTREAM_PROTOCOL_WITH_LF.len() {
-                try_ready!(self.dialer.sink.poll_flush());
-                return Ok(Async::Ready(self.dialer))
+            if self.offset >= MULTISTREAM_PROTOCOL.len() {
+                if d.sink.poll_flush()?.is_ready() {
+                    return Ok(Async::Ready(d))
+                }
             } else {
-                match self.dialer.sink.poll_write(&MULTISTREAM_PROTOCOL_WITH_LF[self.offset ..])? {
+                match d.sink.poll_write(&MULTISTREAM_PROTOCOL[self.offset ..])? {
                     Async::Ready(n) => { self.offset += n }
                     Async::NotReady => return Ok(Async::NotReady)
                 }

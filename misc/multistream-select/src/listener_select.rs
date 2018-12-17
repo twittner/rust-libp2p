@@ -27,8 +27,7 @@ use crate::protocol::{
     DialerToListenerMessage,
     Listener,
     ListenerFuture,
-    ListenerToDialerMessage,
-    RawSlice
+    ListenerToDialerMessage
 };
 use log::{debug, trace};
 use std::mem;
@@ -57,7 +56,7 @@ where
 {
     ListenerSelectFuture {
         inner: ListenerSelectState::AwaitListener {
-            listener_fut: Listener::new(inner),
+            listener_fut: Listener::<_, Bytes>::new(inner),
             protocols: protocols
         }
     }
@@ -76,15 +75,15 @@ where
     for<'a> &'a I: IntoIterator<Item = X>
 {
     AwaitListener {
-        listener_fut: ListenerFuture<R, RawSlice>,
+        listener_fut: ListenerFuture<R>,
         protocols: I
     },
     Incoming {
-        stream: StreamFuture<Listener<R, RawSlice>>,
+        stream: StreamFuture<Listener<R, Bytes>>,
         protocols: I
     },
     Outgoing {
-        sender: sink::Send<Listener<R, RawSlice>>,
+        sender: sink::Send<Listener<R, Bytes>>,
         protocols: I,
         outcome: Option<X>
     },

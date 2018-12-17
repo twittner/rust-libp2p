@@ -21,8 +21,9 @@ tokio-io = "0.1"
 #git = "https://github.com/twittner/unsigned-varint"
 #branch = "prefix-suffix"
 path = "../../../unsigned-varint"
-features = ["codec"]
+features = ["codec", "io"]
 
 [dev-dependencies]
+env_logger = "0.6"
 tokio = "0.1"
 tokio-tcp = "0.1"

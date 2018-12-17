@@ -22,6 +22,7 @@
 
 #![cfg(test)]
 
+use bytes::Bytes;
 use crate::ProtocolChoiceError;
 use crate::dialer_select::{dialer_select_proto_parallel, dialer_select_proto_serial};
 use crate::protocol::{Dialer, DialerToListenerMessage, Listener, ListenerToDialerMessage};
@@ -52,7 +53,7 @@ fn negotiate_with_self_succeeds() {
         .incoming()
         .into_future()
         .map_err(|(e, _)| e.into())
-        .and_then(move |(connec, _)| Listener::new(connec.unwrap()))
+        .and_then(move |(connec, _)| Listener::<_, Bytes>::new(connec.unwrap()))
         .and_then(|l| l.into_future().map_err(|(e, _)| e))
         .and_then(|(msg, rest)| {
             let proto = match msg {
@@ -84,6 +85,7 @@ fn negotiate_with_self_succeeds() {
 
 #[test]
 fn select_proto_basic() {
+    let _ = env_logger::try_init();
     let listener = TcpListener::bind(&"127.0.0.1:0".parse().unwrap()).unwrap();
     let listener_addr = listener.local_addr().unwrap();
 

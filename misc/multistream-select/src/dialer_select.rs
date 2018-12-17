@@ -110,11 +110,10 @@ enum DialerSelectSeqState<R: AsyncRead + AsyncWrite, I: Iterator> {
     Undefined
 }
 
-impl<R, I, X> Future for DialerSelectSeq<R, I>
+impl<R, I> Future for DialerSelectSeq<R, I>
 where
     I: Iterator,
-    I::Item: AsRef<X>,
-    for<'a> &'a X: AsRef<[u8]>,
+    I::Item: AsRef<[u8]> + Clone,
     R: AsyncRead + AsyncWrite,
 {
     type Item = (I::Item, Aio<R>);
@@ -141,7 +140,7 @@ where
                 DialerSelectSeqState::NextProtocol { mut dialer, protocols, proto_name } => {
                     trace!("sending {:?}", proto_name.as_ref().as_ref());
                     let req = DialerToListenerMessage::ProtocolRequest {
-                        name: proto_name.as_ref()
+                        name: proto_name.clone()
                     };
                     match dialer.start_send(req)? {
                         AsyncSink::Ready => {
@@ -245,31 +244,31 @@ pub struct DialerSelectPar<R: AsyncRead + AsyncWrite, I: Iterator> {
 
 enum DialerSelectParState<R: AsyncRead + AsyncWrite, I: Iterator> {
     AwaitDialer {
-        dialer_fut: DialerFuture<R, RawSlice>,
+        dialer_fut: DialerFuture<R, I::Item>,
         protocols: I
     },
     ProtocolList {
-        dialer: Dialer<R, RawSlice>,
+        dialer: Dialer<R, I::Item>,
         protocols: I
     },
     SendListRequest {
-        dialer: Dialer<R, RawSlice>,
+        dialer: Dialer<R, I::Item>,
         protocols: I
     },
     AwaitListResponse {
-        stream: StreamFuture<Dialer<R, RawSlice>>,
+        stream: StreamFuture<Dialer<R, I::Item>>,
         protocols: I,
     },
     Protocol {
-        dialer: Dialer<R, RawSlice>,
+        dialer: Dialer<R, I::Item>,
         proto_name: I::Item
     },
     SendProtocol {
-        dialer: Dialer<R, RawSlice>,
+        dialer: Dialer<R, I::Item>,
         proto_name: I::Item
     },
     AwaitProtocol {
-        stream: StreamFuture<Dialer<R, RawSlice>>,
+        stream: StreamFuture<Dialer<R, I::Item>>,
         proto_name: I::Item
     },
     Undefined
@@ -278,10 +277,10 @@ enum DialerSelectParState<R: AsyncRead + AsyncWrite, I: Iterator> {
 impl<R, I> Future for DialerSelectPar<R, I>
 where
     I: Iterator,
-    I::Item: AsRef<[u8]>,
+    I::Item: AsRef<[u8]> + Clone,
     R: AsyncRead + AsyncWrite,
 {
-    type Item = (I::Item, R);
+    type Item = (I::Item, Aio<R>);
     type Error = ProtocolChoiceError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -364,7 +363,7 @@ where
                 DialerSelectParState::Protocol { mut dialer, proto_name } => {
                     trace!("requesting protocol: {:?}", proto_name.as_ref());
                     let req = DialerToListenerMessage::ProtocolRequest {
-                        name: proto_name.as_ref().into()
+                        name: proto_name.clone()
                     };
                     match dialer.start_send(req)? {
                         AsyncSink::Ready => {

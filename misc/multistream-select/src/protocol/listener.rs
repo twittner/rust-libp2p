@@ -26,18 +26,19 @@ use crate::protocol::DialerToListenerMessage;
 use crate::protocol::ListenerToDialerMessage;
 use crate::protocol::MultistreamSelectError;
 use crate::protocol::{MULTISTREAM_PROTOCOL, MULTISTREAM_PROTOCOL_WITH_LF};
-use crate::protocol::RawSlice;
+use crate::protocol::Aio;
 use log::{debug, trace};
 use std::mem;
-use tokio_codec::Framed;
-use tokio_io::{AsyncRead, AsyncWrite};
-use unsigned_varint::{encode, codec::UviBytes};
+use tokio_codec::FramedRead;
+use tokio_io::{AsyncRead, AsyncWrite, io::{ReadHalf, WriteHalf}};
+use unsigned_varint::{encode, codec::UviBytes, io::UviWriter};
 
-
-/// Wraps around a `AsyncRead+AsyncWrite`. Assumes that we're on the listener's side. Produces and
-/// accepts messages.
+/// Wraps around a `AsyncRead+AsyncWrite`.
+/// Assumes that we're on the listener's side. Produces and accepts messages.
 pub struct Listener<R, N> {
-    inner: Framed<R, UviBytes<RawSlice>>,
+    stream: FramedRead<ReadHalf<R>, UviBytes>,
+    sink: UviWriter<WriteHalf<R>>,
+    state: State,
     _mark: std::marker::PhantomData<N>
 }
 
@@ -47,23 +48,36 @@ where
 {
     /// Takes ownership of a socket and starts the handshake. If the handshake succeeds, the
     /// future returns a `Listener`.
-    pub fn new(inner: R) -> ListenerFuture<R, N> {
+    pub fn new(inner: R) -> ListenerFuture<R> {
+        let (reader, writer) = inner.split();
         let mut codec = UviBytes::default();
         codec.set_max_len(std::u16::MAX as usize);
-        codec.set_suffix(b"\n");
-        let inner = Framed::new(inner, codec);
-        ListenerFuture {
-            inner: ListenerFutureState::Await { inner: inner.into_future() },
+        let mut writer = UviWriter::new(writer);
+        writer.set_suffix(b"\n");
+        let listener = Listener {
+            stream: FramedRead::new(reader, codec),
+            sink: writer,
+            state: State::Start,
             _mark: std::marker::PhantomData
+        };
+        ListenerFuture {
+            inner: ListenerFutureState::Await { listener }
         }
     }
 
     /// Grants back the socket. Typically used after a `ProtocolRequest` has been received and a
     /// `ProtocolAck` has been sent back.
     #[inline]
-    pub fn into_inner(self) -> R {
-        self.inner.into_inner()
+    pub fn into_inner(self) -> Aio<R> {
+        Aio(self.stream.into_inner(), self.sink.into_inner())
     }
+}
+
+#[derive(Debug)]
+enum State {
+    Start,
+    Message(usize),
+    List(Vec<u8>, usize)
 }
 
 impl<R, N> Sink for Listener<R, N>
@@ -76,44 +90,63 @@ where
 
     #[inline]
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
-        match item {
-            ListenerToDialerMessage::ProtocolAck { name } => {
-                if !name.as_ref().starts_with(b"/") {
-                    debug!("invalid protocol name {:?}", name.as_ref());
-                    return Err(MultistreamSelectError::WrongProtocolName);
+        use crate::protocol::ListenerToDialerMessage::*;
+        loop {
+            match (&item, &mut self.state) {
+                (ProtocolsListResponse { list }, State::Start) => {
+                    let mut buf = encode::usize_buffer();
+                    let mut out_msg = Vec::from(encode::usize(list.len(), &mut buf));
+                    out_msg.push(b'\n');
+                    for i in 0 .. list.len() {
+                        out_msg.extend(encode::usize(list[i].len() + 1, &mut buf)); // +1 for '\n'
+                        out_msg.extend_from_slice(&list[i]);
+                        if i < list.len() - 1 {
+                            out_msg.push(b'\n')
+                        }
+                    }
+                    self.state = State::List(out_msg, 0)
                 }
-                match self.inner.start_send(name.as_ref().into())? {
-                    AsyncSink::Ready => Ok(AsyncSink::Ready),
-                    AsyncSink::NotReady(_) => {
-                        Ok(AsyncSink::NotReady(ListenerToDialerMessage::ProtocolAck { name }))
+                (_, State::Start) => {
+                    self.state = State::Message(0)
+                }
+                (ProtocolAck { name }, State::Message(offset)) => {
+                    if !name.as_ref().starts_with(b"/") {
+                        debug!("invalid protocol name {:?}", name.as_ref());
+                        return Err(MultistreamSelectError::WrongProtocolName);
+                    }
+                    match self.sink.poll_write(&name.as_ref()[*offset ..])? {
+                        Async::Ready(n) => {
+                            *offset += n;
+                            if *offset >= name.as_ref().len() {
+                                self.state = State::Start;
+                                return Ok(AsyncSink::Ready)
+                            }
+                        }
+                        Async::NotReady => return Ok(AsyncSink::NotReady(item))
                     }
                 }
-            }
-            ListenerToDialerMessage::NotAvailable => {
-                match self.inner.start_send(b"na"[..].into())? {
-                    AsyncSink::Ready => Ok(AsyncSink::Ready),
-                    AsyncSink::NotReady(_) => {
-                        Ok(AsyncSink::NotReady(ListenerToDialerMessage::NotAvailable))
+                (NotAvailable, State::Message(offset)) => {
+                    match self.sink.poll_write(&b"na"[*offset ..])? {
+                        Async::Ready(n) => {
+                            *offset += n;
+                            if *offset >= 2 {
+                                self.state = State::Start;
+                                return Ok(AsyncSink::Ready)
+                            }
+                        }
+                        Async::NotReady => return Ok(AsyncSink::NotReady(item))
                     }
                 }
-            }
-            ListenerToDialerMessage::ProtocolsListResponse { list } => {
-                let mut buf = encode::usize_buffer();
-                let mut out_msg = Vec::from(encode::usize(list.len(), &mut buf));
-                out_msg.push(b'\n');
-                for i in 0 .. list.len() {
-                    out_msg.extend(encode::usize(list[i].len() + 1, &mut buf)); // +1 for '\n'
-                    out_msg.extend_from_slice(&list[i]);
-                    if i < list.len() - 1 {
-                        out_msg.push(b'\n')
-                    }
-                }
-
-                match self.inner.start_send(out_msg[..].into())? {
-                    AsyncSink::Ready => Ok(AsyncSink::Ready),
-                    AsyncSink::NotReady(_) => {
-                        let m = ListenerToDialerMessage::ProtocolsListResponse { list };
-                        Ok(AsyncSink::NotReady(m))
+                (ProtocolsListResponse {..}, State::List(list, offset)) => {
+                    match self.sink.poll_write(&list[*offset ..])? {
+                        Async::Ready(n) => {
+                            *offset += n;
+                            if *offset >= list.len() {
+                                self.state = State::Start;
+                                return Ok(AsyncSink::Ready)
+                            }
+                        }
+                        Async::NotReady => return Ok(AsyncSink::NotReady(item))
                     }
                 }
             }
@@ -122,24 +155,24 @@ where
 
     #[inline]
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        Ok(self.inner.poll_complete()?)
+        Ok(self.sink.poll_complete()?)
     }
 
     #[inline]
     fn close(&mut self) -> Poll<(), Self::SinkError> {
-        Ok(self.inner.close()?)
+        Ok(self.sink.shutdown()?)
     }
 }
 
 impl<R, N> Stream for Listener<R, N>
 where
-    R: AsyncRead + AsyncWrite,
+    R: AsyncRead + AsyncWrite
 {
     type Item = DialerToListenerMessage<Bytes>;
     type Error = MultistreamSelectError;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        let mut frame = match self.inner.poll() {
+        let mut frame = match self.stream.poll() {
             Ok(Async::Ready(Some(frame))) => frame,
             Ok(Async::Ready(None)) => return Ok(Async::Ready(None)),
             Ok(Async::NotReady) => return Ok(Async::NotReady),
@@ -165,23 +198,22 @@ where
 
 /// Future, returned by `Listener::new` which performs the handshake and returns
 /// the `Listener` if successful.
-pub struct ListenerFuture<T: AsyncRead + AsyncWrite, N> {
+pub struct ListenerFuture<T: AsyncRead + AsyncWrite> {
     inner: ListenerFutureState<T>,
-    _mark: std::marker::PhantomData<N>
 }
 
 enum ListenerFutureState<T: AsyncRead + AsyncWrite> {
     Await {
-        inner: StreamFuture<Framed<T, UviBytes<RawSlice>>>
+        inner: StreamFuture<Framed<T, UviBytes<Bytes>>>
     },
     Reply {
-        sender: sink::Send<Framed<T, UviBytes<RawSlice>>>
+        sender: sink::Send<Framed<T, UviBytes<Bytes>>>
     },
     Undefined
 }
 
-impl<T: AsyncRead + AsyncWrite, N> Future for ListenerFuture<T, N> {
-    type Item = Listener<T, N>;
+impl<T: AsyncRead + AsyncWrite> Future for ListenerFuture<T> {
+    type Item = Listener<T, Bytes>;
     type Error = MultistreamSelectError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -213,10 +245,7 @@ impl<T: AsyncRead + AsyncWrite, N> Future for ListenerFuture<T, N> {
                             return Ok(Async::NotReady)
                         }
                     };
-                    return Ok(Async::Ready(Listener {
-                        inner: listener,
-                        _mark: std::marker::PhantomData
-                    }))
+                    return Ok(Async::Ready(Listener { inner: listener }))
                 }
                 ListenerFutureState::Undefined => panic!("ListenerFutureState::poll called after completion")
             }
@@ -243,7 +272,7 @@ mod tests {
             .incoming()
             .into_future()
             .map_err(|(e, _)| e.into())
-            .and_then(move |(connec, _)| Listener::new(connec.unwrap()))
+            .and_then(move |(connec, _)| Listener::<_, Bytes>::new(connec.unwrap()))
             .and_then(|listener| {
                 let proto_name = Bytes::from("invalid-proto");
                 listener.send(ListenerToDialerMessage::ProtocolAck { name: proto_name })
