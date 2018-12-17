@@ -20,7 +20,10 @@
 
 //! Contains lower-level structs to handle the multistream protocol.
 
-use bytes::{Bytes, IntoBuf};
+use bytes::Bytes;
+use futures::Poll;
+use std::io;
+use tokio_io::{AsyncRead, AsyncWrite, io::{ReadHalf, WriteHalf}};
 
 mod dialer;
 mod error;
@@ -67,33 +70,29 @@ pub enum ListenerToDialerMessage<N> {
     },
 }
 
-pub(crate) struct RawSlice(*const u8, usize);
+pub struct Aio<T>(ReadHalf<T>, WriteHalf<T>);
 
-// unsafe impl Send for RawSlice {}
-
-impl<'a> From<&'a [u8]> for RawSlice {
-    fn from(x: &'a[u8]) -> Self {
-        let n = x.len();
-        RawSlice(x.as_ptr(), n)
+impl<T: AsyncRead> io::Read for Aio<T> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buf)
     }
 }
 
-impl AsRef<[u8]> for RawSlice {
-    fn as_ref(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.0, self.1) }
+impl<T: AsyncRead> AsyncRead for Aio<T> { }
+
+impl<T: AsyncWrite> io::Write for Aio<T> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.1.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.1.flush()
     }
 }
 
-impl IntoBuf for RawSlice {
-    type Buf = std::io::Cursor<RawSlice>;
-
-    fn into_buf(self) -> Self::Buf {
-        std::io::Cursor::new(self)
+impl<T: AsyncWrite> AsyncWrite for Aio<T> {
+    fn shutdown(&mut self) -> Poll<(), io::Error> {
+        self.1.shutdown()
     }
 }
 
-impl std::fmt::Debug for RawSlice {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?}", self.as_ref())
-    }
-}

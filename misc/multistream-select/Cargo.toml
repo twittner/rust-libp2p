@@ -18,8 +18,9 @@ tokio-codec = "0.1"
 tokio-io = "0.1"
 
 [dependencies.unsigned-varint]
-git = "https://github.com/twittner/unsigned-varint"
-branch = "prefix-suffix"
+#git = "https://github.com/twittner/unsigned-varint"
+#branch = "prefix-suffix"
+path = "../../../unsigned-varint"
 features = ["codec"]
 
 [dev-dependencies]

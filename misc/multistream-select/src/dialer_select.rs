@@ -23,11 +23,11 @@
 
 use futures::{future::Either, prelude::*, stream::StreamFuture};
 use crate::protocol::{
+    Aio,
     Dialer,
     DialerFuture,
     DialerToListenerMessage,
-    ListenerToDialerMessage,
-    RawSlice
+    ListenerToDialerMessage
 };
 use log::trace;
 use std::mem;
@@ -89,34 +89,35 @@ pub struct DialerSelectSeq<R: AsyncRead + AsyncWrite, I: Iterator> {
 
 enum DialerSelectSeqState<R: AsyncRead + AsyncWrite, I: Iterator> {
     AwaitDialer {
-        dialer_fut: DialerFuture<R, RawSlice>,
+        dialer_fut: DialerFuture<R, I::Item>,
         protocols: I
     },
     NextProtocol {
-        dialer: Dialer<R, RawSlice>,
+        dialer: Dialer<R, I::Item>,
         proto_name: I::Item,
         protocols: I
     },
     SendProtocol {
-        dialer: Dialer<R, RawSlice>,
+        dialer: Dialer<R, I::Item>,
         proto_name: I::Item,
         protocols: I
     },
     AwaitProtocol {
-        stream: StreamFuture<Dialer<R, RawSlice>>,
+        stream: StreamFuture<Dialer<R, I::Item>>,
         proto_name: I::Item,
         protocols: I
     },
     Undefined
 }
 
-impl<R, I> Future for DialerSelectSeq<R, I>
+impl<R, I, X> Future for DialerSelectSeq<R, I>
 where
     I: Iterator,
-    I::Item: AsRef<[u8]>,
+    I::Item: AsRef<X>,
+    for<'a> &'a X: AsRef<[u8]>,
     R: AsyncRead + AsyncWrite,
 {
-    type Item = (I::Item, R);
+    type Item = (I::Item, Aio<R>);
     type Error = ProtocolChoiceError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -138,9 +139,9 @@ where
                     }
                 }
                 DialerSelectSeqState::NextProtocol { mut dialer, protocols, proto_name } => {
-                    trace!("sending {:?}", proto_name.as_ref());
+                    trace!("sending {:?}", proto_name.as_ref().as_ref());
                     let req = DialerToListenerMessage::ProtocolRequest {
-                        name: proto_name.as_ref().into()
+                        name: proto_name.as_ref()
                     };
                     match dialer.start_send(req)? {
                         AsyncSink::Ready => {
