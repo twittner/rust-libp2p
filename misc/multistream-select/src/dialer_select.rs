@@ -23,7 +23,6 @@
 
 use futures::{future::Either, prelude::*, stream::StreamFuture};
 use crate::protocol::{
-    Aio,
     Dialer,
     DialerFuture,
     DialerToListenerMessage,
@@ -116,7 +115,7 @@ where
     I::Item: AsRef<[u8]> + Clone,
     R: AsyncRead + AsyncWrite,
 {
-    type Item = (I::Item, Aio<R>);
+    type Item = (I::Item, R);
     type Error = ProtocolChoiceError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
@@ -280,7 +279,7 @@ where
     I::Item: AsRef<[u8]> + Clone,
     R: AsyncRead + AsyncWrite,
 {
-    type Item = (I::Item, Aio<R>);
+    type Item = (I::Item, R);
     type Error = ProtocolChoiceError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {

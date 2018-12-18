@@ -74,3 +74,7 @@ members = [
     "transports/uds",
     "transports/websocket"
 ]
+
+[patch.crates-io]
+tokio-io = { path = "../../github/tokio/tokio-io" }
+tokio-codec = { path = "../../github/tokio/tokio-codec" }

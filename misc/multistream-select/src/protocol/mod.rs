@@ -20,10 +20,6 @@
 
 //! Contains lower-level structs to handle the multistream protocol.
 
-use futures::Poll;
-use std::io;
-use tokio_io::{AsyncRead, AsyncWrite, io::{ReadHalf, WriteHalf}};
-
 mod dialer;
 mod error;
 mod listener;
@@ -67,31 +63,5 @@ pub enum ListenerToDialerMessage<N> {
         // TODO: use some sort of iterator
         list: Vec<N>,
     },
-}
-
-pub struct Aio<T>(ReadHalf<T>, WriteHalf<T>);
-
-impl<T: AsyncRead> io::Read for Aio<T> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.0.read(buf)
-    }
-}
-
-impl<T: AsyncRead> AsyncRead for Aio<T> { }
-
-impl<T: AsyncWrite> io::Write for Aio<T> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.1.write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.1.flush()
-    }
-}
-
-impl<T: AsyncWrite> AsyncWrite for Aio<T> {
-    fn shutdown(&mut self) -> Poll<(), io::Error> {
-        self.1.shutdown()
-    }
 }
 

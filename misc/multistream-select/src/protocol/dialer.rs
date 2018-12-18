@@ -26,7 +26,6 @@ use crate::protocol::ListenerToDialerMessage;
 use crate::protocol::MultistreamSelectError;
 use crate::protocol::MULTISTREAM_PROTOCOL;
 use crate::protocol::MULTISTREAM_PROTOCOL_WITH_LF;
-use crate::protocol::Aio;
 use futures::prelude::*;
 use tokio_codec::FramedRead;
 use tokio_io::{AsyncRead, AsyncWrite, io::{ReadHalf, WriteHalf}};
@@ -71,8 +70,12 @@ where
 
     /// Grants back the socket. Typically used after a `ProtocolAck` has been received.
     #[inline]
-    pub fn into_inner(self) -> Aio<R> {
-        Aio(self.stream.into_inner(), self.sink.into_inner())
+    pub fn into_inner(self) -> R {
+        if let Ok(r) = tokio_io::reunite(self.stream.into_inner(), self.sink.into_inner()) {
+            r
+        } else {
+            unreachable!("xxx")
+        }
     }
 }
 
@@ -225,18 +228,27 @@ mod tests {
     use crate::protocol::{Dialer, DialerToListenerMessage, MultistreamSelectError};
     use tokio::runtime::current_thread::Runtime;
     use tokio_tcp::{TcpListener, TcpStream};
-    use futures::Future;
+    use tokio_io::{io, AsyncRead};
+    use futures::{future::{self, Either}, prelude::*};
     use futures::{Sink, Stream};
 
     #[test]
     fn wrong_proto_name() {
+        let _ = env_logger::try_init();
         let listener = TcpListener::bind(&"127.0.0.1:0".parse().unwrap()).unwrap();
         let listener_addr = listener.local_addr().unwrap();
 
         let server = listener
             .incoming()
             .into_future()
-            .map(|_| ())
+            .map(|(c, _)| {
+                if let Some(c) = c {
+                    let (r, w) = c.split();
+                    Either::A(io::copy(r, w).map(|_| ()))
+                } else {
+                    Either::B(future::ok::<_, std::io::Error>(()))
+                }
+            })
             .map_err(|(e, _)| e.into());
 
         let client = TcpStream::connect(&listener_addr)
@@ -250,7 +262,8 @@ mod tests {
         let mut rt = Runtime::new().unwrap();
         match rt.block_on(server.join(client)) {
             Err(MultistreamSelectError::WrongProtocolName) => (),
-            _ => panic!(),
+            Err(e) => panic!("unexpected error: {:?}", e),
+            _      => panic!(),
         }
     }
 }

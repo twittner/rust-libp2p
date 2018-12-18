@@ -23,7 +23,6 @@
 
 use futures::{prelude::*, stream::StreamFuture};
 use crate::protocol::{
-    Aio,
     DialerToListenerMessage,
     Listener,
     ListenerFuture,
@@ -104,7 +103,7 @@ where
     R: AsyncRead + AsyncWrite,
     X: AsRef<[u8]> + std::fmt::Debug + Clone
 {
-    type Item = (X, Aio<R>, I);
+    type Item = (X, R, I);
     type Error = ProtocolChoiceError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {

@@ -26,7 +26,6 @@ use crate::protocol::DialerToListenerMessage;
 use crate::protocol::ListenerToDialerMessage;
 use crate::protocol::MultistreamSelectError;
 use crate::protocol::{MULTISTREAM_PROTOCOL, MULTISTREAM_PROTOCOL_WITH_LF};
-use crate::protocol::Aio;
 use log::{debug, trace};
 use tokio_codec::FramedRead;
 use tokio_io::{AsyncRead, AsyncWrite, io::{ReadHalf, WriteHalf}};
@@ -68,8 +67,12 @@ where
     /// Grants back the socket. Typically used after a `ProtocolRequest` has been received and a
     /// `ProtocolAck` has been sent back.
     #[inline]
-    pub fn into_inner(self) -> Aio<R> {
-        Aio(self.stream.into_inner(), self.sink.into_inner())
+    pub fn into_inner(self) -> R {
+        if let Ok(r) = tokio_io::reunite(self.stream.into_inner(), self.sink.into_inner()) {
+            r
+        } else {
+            unreachable!("XXX")
+        }
     }
 }
 
