@@ -20,7 +20,6 @@
 
 //! Contains lower-level structs to handle the multistream protocol.
 
-use bytes::Bytes;
 use futures::Poll;
 use std::io;
 use tokio_io::{AsyncRead, AsyncWrite, io::{ReadHalf, WriteHalf}};
@@ -66,7 +65,7 @@ pub enum ListenerToDialerMessage<N> {
     ProtocolsListResponse {
         /// The list of protocols.
         // TODO: use some sort of iterator
-        list: Vec<Bytes>,
+        list: Vec<N>,
     },
 }
 

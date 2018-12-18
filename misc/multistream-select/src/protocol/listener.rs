@@ -21,14 +21,13 @@
 //! Contains the `Listener` wrapper, which allows raw communications with a dialer.
 
 use bytes::Bytes;
-use futures::{Async, AsyncSink, prelude::*, sink, stream::StreamFuture};
+use futures::prelude::*;
 use crate::protocol::DialerToListenerMessage;
 use crate::protocol::ListenerToDialerMessage;
 use crate::protocol::MultistreamSelectError;
 use crate::protocol::{MULTISTREAM_PROTOCOL, MULTISTREAM_PROTOCOL_WITH_LF};
 use crate::protocol::Aio;
 use log::{debug, trace};
-use std::mem;
 use tokio_codec::FramedRead;
 use tokio_io::{AsyncRead, AsyncWrite, io::{ReadHalf, WriteHalf}};
 use unsigned_varint::{encode, codec::UviBytes, io::UviWriter};
@@ -48,7 +47,7 @@ where
 {
     /// Takes ownership of a socket and starts the handshake. If the handshake succeeds, the
     /// future returns a `Listener`.
-    pub fn new(inner: R) -> ListenerFuture<R> {
+    pub fn new(inner: R) -> ListenerFuture<R, N> {
         let (reader, writer) = inner.split();
         let mut codec = UviBytes::default();
         codec.set_max_len(std::u16::MAX as usize);
@@ -61,7 +60,8 @@ where
             _mark: std::marker::PhantomData
         };
         ListenerFuture {
-            inner: ListenerFutureState::Await { listener }
+            listener: Some(listener),
+            state: ListenerFutureState::Await
         }
     }
 
@@ -88,7 +88,6 @@ where
     type SinkItem = ListenerToDialerMessage<N>;
     type SinkError = MultistreamSelectError;
 
-    #[inline]
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
         use crate::protocol::ListenerToDialerMessage::*;
         loop {
@@ -98,8 +97,8 @@ where
                     let mut out_msg = Vec::from(encode::usize(list.len(), &mut buf));
                     out_msg.push(b'\n');
                     for i in 0 .. list.len() {
-                        out_msg.extend(encode::usize(list[i].len() + 1, &mut buf)); // +1 for '\n'
-                        out_msg.extend_from_slice(&list[i]);
+                        out_msg.extend(encode::usize(list[i].as_ref().len() + 1, &mut buf)); // +1 for '\n'
+                        out_msg.extend_from_slice(list[i].as_ref());
                         if i < list.len() - 1 {
                             out_msg.push(b'\n')
                         }
@@ -149,13 +148,18 @@ where
                         Async::NotReady => return Ok(AsyncSink::NotReady(item))
                     }
                 }
+                | (ProtocolAck {..}, State::List(..))
+                | (NotAvailable, State::List(..))
+                | (ProtocolsListResponse {..}, State::Message(..)) => {
+                    unreachable!("invalid state combination")
+                }
             }
         }
     }
 
     #[inline]
     fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        Ok(self.sink.poll_complete()?)
+        Ok(self.sink.poll_flush()?)
     }
 
     #[inline]
@@ -198,56 +202,51 @@ where
 
 /// Future, returned by `Listener::new` which performs the handshake and returns
 /// the `Listener` if successful.
-pub struct ListenerFuture<T: AsyncRead + AsyncWrite> {
-    inner: ListenerFutureState<T>,
+pub struct ListenerFuture<R, N> {
+    listener: Option<Listener<R, N>>,
+    state: ListenerFutureState
 }
 
-enum ListenerFutureState<T: AsyncRead + AsyncWrite> {
-    Await {
-        inner: StreamFuture<Framed<T, UviBytes<Bytes>>>
-    },
-    Reply {
-        sender: sink::Send<Framed<T, UviBytes<Bytes>>>
-    },
-    Undefined
+enum ListenerFutureState {
+    Await,
+    Reply(usize)
 }
 
-impl<T: AsyncRead + AsyncWrite> Future for ListenerFuture<T> {
-    type Item = Listener<T, Bytes>;
+impl<R: AsyncRead + AsyncWrite, N> Future for ListenerFuture<R, N> {
+    type Item = Listener<R, N>;
     type Error = MultistreamSelectError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let mut listener = self.listener.take().unwrap();
         loop {
-            match mem::replace(&mut self.inner, ListenerFutureState::Undefined) {
-                ListenerFutureState::Await { mut inner } => {
-                    let (msg, socket) =
-                        match inner.poll() {
-                            Ok(Async::Ready(x)) => x,
-                            Ok(Async::NotReady) => {
-                                self.inner = ListenerFutureState::Await { inner };
-                                return Ok(Async::NotReady)
-                            }
-                            Err((e, _)) => return Err(MultistreamSelectError::from(e))
-                        };
-                    if msg.as_ref().map(|b| &b[..]) != Some(MULTISTREAM_PROTOCOL_WITH_LF) {
+            match self.state {
+                ListenerFutureState::Await => {
+                    let msg = match listener.stream.poll()? {
+                        Async::Ready(msg) => msg,
+                        Async::NotReady => {
+                            self.listener = Some(listener);
+                            return Ok(Async::NotReady)
+                        }
+                    };
+                    if msg.as_ref().map(|m| m.as_ref()) != Some(MULTISTREAM_PROTOCOL_WITH_LF) {
                         debug!("failed handshake; received: {:?}", msg);
                         return Err(MultistreamSelectError::FailedHandshake)
                     }
                     trace!("sending back /multistream/<version> to finish the handshake");
-                    let sender = socket.send(MULTISTREAM_PROTOCOL.into());
-                    self.inner = ListenerFutureState::Reply { sender }
+                    self.state = ListenerFutureState::Reply(0)
                 }
-                ListenerFutureState::Reply { mut sender } => {
-                    let listener = match sender.poll()? {
-                        Async::Ready(x) => x,
+                ListenerFutureState::Reply(ref mut offset) => {
+                    if *offset >= MULTISTREAM_PROTOCOL.len() {
+                        return Ok(Async::Ready(listener))
+                    }
+                    match listener.sink.poll_write(&MULTISTREAM_PROTOCOL[*offset ..])? {
+                        Async::Ready(n) => { *offset += n }
                         Async::NotReady => {
-                            self.inner = ListenerFutureState::Reply { sender };
+                            self.listener = Some(listener);
                             return Ok(Async::NotReady)
                         }
-                    };
-                    return Ok(Async::Ready(Listener { inner: listener }))
+                    }
                 }
-                ListenerFutureState::Undefined => panic!("ListenerFutureState::poll called after completion")
             }
         }
     }

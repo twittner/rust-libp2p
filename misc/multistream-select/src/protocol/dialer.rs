@@ -201,16 +201,19 @@ impl<R: AsyncWrite, N> Future for DialerFuture<R, N> {
     type Error = MultistreamSelectError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let mut d = self.dialer.take().unwrap();
+        let mut dialer = self.dialer.take().unwrap();
         loop {
             if self.offset >= MULTISTREAM_PROTOCOL.len() {
-                if d.sink.poll_flush()?.is_ready() {
-                    return Ok(Async::Ready(d))
+                if dialer.sink.poll_flush()?.is_ready() {
+                    return Ok(Async::Ready(dialer))
                 }
             } else {
-                match d.sink.poll_write(&MULTISTREAM_PROTOCOL[self.offset ..])? {
+                match dialer.sink.poll_write(&MULTISTREAM_PROTOCOL[self.offset ..])? {
                     Async::Ready(n) => { self.offset += n }
-                    Async::NotReady => return Ok(Async::NotReady)
+                    Async::NotReady => {
+                        self.dialer = Some(dialer);
+                        return Ok(Async::NotReady)
+                    }
                 }
             }
         }
