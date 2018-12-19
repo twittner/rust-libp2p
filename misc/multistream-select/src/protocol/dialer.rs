@@ -20,37 +20,34 @@
 
 //! Contains the `Dialer` wrapper, which allows raw communications with a listener.
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
+use crate::length_delimited::LengthDelimited;
 use crate::protocol::DialerToListenerMessage;
 use crate::protocol::ListenerToDialerMessage;
 use crate::protocol::MultistreamSelectError;
-use crate::protocol::{MULTISTREAM_PROTOCOL, MULTISTREAM_PROTOCOL_WITH_LF};
-use crate::protocol::RawSlice;
-use futures::{prelude::*, sink, Async, AsyncSink, StartSend, try_ready};
-use tokio_codec::Framed;
+use crate::protocol::MULTISTREAM_PROTOCOL_WITH_LF;
+use futures::{prelude::*, sink, Async, StartSend, try_ready};
+use tokio_codec::Encoder;
 use tokio_io::{AsyncRead, AsyncWrite};
-use unsigned_varint::{decode, codec::UviBytes};
+use unsigned_varint::{decode, codec::Uvi};
 
 /// Wraps around a `AsyncRead+AsyncWrite`.
 /// Assumes that we're on the dialer's side. Produces and accepts messages.
 pub struct Dialer<R, N> {
-    inner: Framed<R, UviBytes<RawSlice>>,
-    handshake_finished: bool,
-    _mark: std::marker::PhantomData<N>
+    inner: LengthDelimited<R, MessageEncoder<N>>,
+    handshake_finished: bool
 }
 
 impl<R, N> Dialer<R, N>
 where
-    R: AsyncRead + AsyncWrite
+    R: AsyncRead + AsyncWrite,
+    N: AsRef<[u8]>
 {
     pub fn new(inner: R) -> DialerFuture<R, N> {
-        let mut codec = UviBytes::default();
-        codec.set_max_len(std::u16::MAX as usize);
-        codec.set_suffix(b"\n");
-        let sender = Framed::new(inner, codec);
+        let codec = MessageEncoder(std::marker::PhantomData);
+        let sender = LengthDelimited::new(inner, codec);
         DialerFuture {
-            inner: sender.send(MULTISTREAM_PROTOCOL.into()),
-            _mark: std::marker::PhantomData
+            inner: sender.send(Message::Header)
         }
     }
 
@@ -69,29 +66,12 @@ where
     type SinkItem = DialerToListenerMessage<N>;
     type SinkError = MultistreamSelectError;
 
+    #[inline]
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
-        match item {
-            DialerToListenerMessage::ProtocolRequest { name } => {
-                if !name.as_ref().starts_with(b"/") {
-                    return Err(MultistreamSelectError::WrongProtocolName);
-                }
-                match self.inner.start_send(name.as_ref().into())? {
-                    AsyncSink::Ready => Ok(AsyncSink::Ready),
-                    AsyncSink::NotReady(_) => {
-                        let item = DialerToListenerMessage::ProtocolRequest { name };
-                        Ok(AsyncSink::NotReady(item))
-                    }
-                }
-            }
-            DialerToListenerMessage::ProtocolsListRequest => {
-                match self.inner.start_send(b"ls"[..].into())? {
-                    AsyncSink::Ready => Ok(AsyncSink::Ready),
-                    AsyncSink::NotReady(_) => {
-                        let item = DialerToListenerMessage::ProtocolsListRequest;
-                        Ok(AsyncSink::NotReady(item))
-                    }
-                }
-            }
+        match self.inner.start_send(Message::Body(item))? {
+            AsyncSink::NotReady(Message::Body(item)) => Ok(AsyncSink::NotReady(item)),
+            AsyncSink::NotReady(Message::Header) => unreachable!(),
+            AsyncSink::Ready => Ok(AsyncSink::Ready)
         }
     }
 
@@ -135,7 +115,7 @@ where
                 let frame_len = frame.len();
                 let protocol = frame.split_to(frame_len - 1);
                 return Ok(Async::Ready(Some(ListenerToDialerMessage::ProtocolAck {
-                    name: protocol.freeze(),
+                    name: protocol
                 })));
             } else if frame == b"na\n"[..] {
                 return Ok(Async::Ready(Some(ListenerToDialerMessage::NotAvailable)));
@@ -164,22 +144,58 @@ where
 }
 
 /// Future, returned by `Dialer::new`, which send the handshake and returns the actual `Dialer`.
-pub struct DialerFuture<T: AsyncWrite, N> {
-    inner: sink::Send<Framed<T, UviBytes<RawSlice>>>,
-    _mark: std::marker::PhantomData<N>
+pub struct DialerFuture<T: AsyncWrite, N: AsRef<[u8]>> {
+    inner: sink::Send<LengthDelimited<T, MessageEncoder<N>>>
 }
 
-impl<T: AsyncWrite, N> Future for DialerFuture<T, N> {
+impl<T: AsyncWrite, N: AsRef<[u8]>> Future for DialerFuture<T, N> {
     type Item = Dialer<T, N>;
     type Error = MultistreamSelectError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         let inner = try_ready!(self.inner.poll());
-        Ok(Async::Ready(Dialer {
-            inner,
-            handshake_finished: false,
-            _mark: std::marker::PhantomData
-        }))
+        Ok(Async::Ready(Dialer { inner, handshake_finished: false }))
+    }
+}
+
+/// tokio-codec Encoder handling `DialerToListenerMessage` values.
+struct MessageEncoder<N>(std::marker::PhantomData<N>);
+
+enum Message<N> {
+    Header,
+    Body(DialerToListenerMessage<N>)
+}
+
+impl<N: AsRef<[u8]>> Encoder for MessageEncoder<N> {
+    type Item = Message<N>;
+    type Error = MultistreamSelectError;
+
+    fn encode(&mut self, item: Self::Item, dest: &mut BytesMut) -> Result<(), Self::Error> {
+        match item {
+            Message::Header => {
+                Uvi::<usize>::default().encode(MULTISTREAM_PROTOCOL_WITH_LF.len(), dest)?;
+                dest.reserve(MULTISTREAM_PROTOCOL_WITH_LF.len());
+                dest.put(MULTISTREAM_PROTOCOL_WITH_LF);
+                Ok(())
+            }
+            Message::Body(DialerToListenerMessage::ProtocolRequest { name }) => {
+                if !name.as_ref().starts_with(b"/") {
+                    return Err(MultistreamSelectError::WrongProtocolName)
+                }
+                let len = name.as_ref().len() + 1; // + 1 for \n
+                Uvi::<usize>::default().encode(len, dest)?;
+                dest.reserve(len);
+                dest.put(name.as_ref());
+                dest.put(&b"\n"[..]);
+                Ok(())
+            }
+            Message::Body(DialerToListenerMessage::ProtocolsListRequest) => {
+                Uvi::<usize>::default().encode(3, dest)?;
+                dest.reserve(3);
+                dest.put(&b"ls\n"[..]);
+                Ok(())
+            }
+        }
     }
 }
 

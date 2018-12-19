@@ -26,8 +26,7 @@ use crate::protocol::{
     Dialer,
     DialerFuture,
     DialerToListenerMessage,
-    ListenerToDialerMessage,
-    RawSlice
+    ListenerToDialerMessage
 };
 use log::trace;
 use std::mem;
@@ -49,7 +48,6 @@ pub type DialerSelectFuture<R, I> = Either<DialerSelectSeq<R, I>, DialerSelectPa
 /// remote, and the protocol name that we passed (so that you don't have to clone the name). On
 /// success, the function returns the identifier (of type `P`), plus the socket which now uses that
 /// chosen protocol.
-#[inline]
 pub fn dialer_select_proto<R, I>(inner: R, protocols: I) -> DialerSelectFuture<R, I::IntoIter>
 where
     R: AsyncRead + AsyncWrite,
@@ -69,12 +67,13 @@ where
 ///
 /// Same as `dialer_select_proto`. Tries protocols one by one. The iterator doesn't need to produce
 /// match functions, because it's not needed.
-pub fn dialer_select_proto_serial<R, I>(inner: R, protocols: I) -> DialerSelectSeq<R, I>
+pub fn dialer_select_proto_serial<R, I>(inner: R, protocols: I) -> DialerSelectSeq<R, I::IntoIter>
 where
     R: AsyncRead + AsyncWrite,
-    I: Iterator,
+    I: IntoIterator,
     I::Item: AsRef<[u8]>
 {
+    let protocols = protocols.into_iter();
     DialerSelectSeq {
         inner: DialerSelectSeqState::AwaitDialer { dialer_fut: Dialer::new(inner), protocols }
     }
@@ -83,27 +82,37 @@ where
 
 /// Future, returned by `dialer_select_proto_serial` which selects a protocol
 /// and dialer sequentially.
-pub struct DialerSelectSeq<R: AsyncRead + AsyncWrite, I: Iterator> {
+pub struct DialerSelectSeq<R, I>
+where
+    R: AsyncRead + AsyncWrite,
+    I: Iterator,
+    I::Item: AsRef<[u8]>
+{
     inner: DialerSelectSeqState<R, I>
 }
 
-enum DialerSelectSeqState<R: AsyncRead + AsyncWrite, I: Iterator> {
+enum DialerSelectSeqState<R, I>
+where
+    R: AsyncRead + AsyncWrite,
+    I: Iterator,
+    I::Item: AsRef<[u8]>
+{
     AwaitDialer {
-        dialer_fut: DialerFuture<R, RawSlice>,
+        dialer_fut: DialerFuture<R, I::Item>,
         protocols: I
     },
     NextProtocol {
-        dialer: Dialer<R, RawSlice>,
+        dialer: Dialer<R, I::Item>,
         proto_name: I::Item,
         protocols: I
     },
     SendProtocol {
-        dialer: Dialer<R, RawSlice>,
+        dialer: Dialer<R, I::Item>,
         proto_name: I::Item,
         protocols: I
     },
     AwaitProtocol {
-        stream: StreamFuture<Dialer<R, RawSlice>>,
+        stream: StreamFuture<Dialer<R, I::Item>>,
         proto_name: I::Item,
         protocols: I
     },
@@ -112,9 +121,9 @@ enum DialerSelectSeqState<R: AsyncRead + AsyncWrite, I: Iterator> {
 
 impl<R, I> Future for DialerSelectSeq<R, I>
 where
-    I: Iterator,
-    I::Item: AsRef<[u8]>,
     R: AsyncRead + AsyncWrite,
+    I: Iterator,
+    I::Item: AsRef<[u8]> + Clone
 {
     type Item = (I::Item, R);
     type Error = ProtocolChoiceError;
@@ -140,7 +149,7 @@ where
                 DialerSelectSeqState::NextProtocol { mut dialer, protocols, proto_name } => {
                     trace!("sending {:?}", proto_name.as_ref());
                     let req = DialerToListenerMessage::ProtocolRequest {
-                        name: proto_name.as_ref().into()
+                        name: proto_name.clone()
                     };
                     match dialer.start_send(req)? {
                         AsyncSink::Ready => {
@@ -223,12 +232,13 @@ where
 ///
 /// Same as `dialer_select_proto`. Queries the list of supported protocols from the remote, then
 /// chooses the most appropriate one.
-pub fn dialer_select_proto_parallel<R, I>(inner: R, protocols: I) -> DialerSelectPar<R, I>
+pub fn dialer_select_proto_parallel<R, I>(inner: R, protocols: I) -> DialerSelectPar<R, I::IntoIter>
 where
-    I: Iterator,
-    I::Item: AsRef<[u8]>,
-    R: AsyncRead + AsyncWrite
+    R: AsyncRead + AsyncWrite,
+    I: IntoIterator,
+    I::Item: AsRef<[u8]>
 {
+    let protocols = protocols.into_iter();
     DialerSelectPar {
         inner: DialerSelectParState::AwaitDialer { dialer_fut: Dialer::new(inner), protocols }
     }
@@ -238,37 +248,47 @@ where
 /// Future, returned by `dialer_select_proto_parallel`, which selects a protocol and dialer in
 /// parellel, by first requesting the liste of protocols supported by the remote endpoint and
 /// then selecting the most appropriate one by applying a match predicate to the result.
-pub struct DialerSelectPar<R: AsyncRead + AsyncWrite, I: Iterator> {
+pub struct DialerSelectPar<R, I>
+where
+    R: AsyncRead + AsyncWrite,
+    I: Iterator,
+    I::Item: AsRef<[u8]>
+{
     inner: DialerSelectParState<R, I>
 }
 
-enum DialerSelectParState<R: AsyncRead + AsyncWrite, I: Iterator> {
+enum DialerSelectParState<R, I>
+where
+    R: AsyncRead + AsyncWrite,
+    I: Iterator,
+    I::Item: AsRef<[u8]>
+{
     AwaitDialer {
-        dialer_fut: DialerFuture<R, RawSlice>,
+        dialer_fut: DialerFuture<R, I::Item>,
         protocols: I
     },
     ProtocolList {
-        dialer: Dialer<R, RawSlice>,
+        dialer: Dialer<R, I::Item>,
         protocols: I
     },
     SendListRequest {
-        dialer: Dialer<R, RawSlice>,
+        dialer: Dialer<R, I::Item>,
         protocols: I
     },
     AwaitListResponse {
-        stream: StreamFuture<Dialer<R, RawSlice>>,
+        stream: StreamFuture<Dialer<R, I::Item>>,
         protocols: I,
     },
     Protocol {
-        dialer: Dialer<R, RawSlice>,
+        dialer: Dialer<R, I::Item>,
         proto_name: I::Item
     },
     SendProtocol {
-        dialer: Dialer<R, RawSlice>,
+        dialer: Dialer<R, I::Item>,
         proto_name: I::Item
     },
     AwaitProtocol {
-        stream: StreamFuture<Dialer<R, RawSlice>>,
+        stream: StreamFuture<Dialer<R, I::Item>>,
         proto_name: I::Item
     },
     Undefined
@@ -276,9 +296,9 @@ enum DialerSelectParState<R: AsyncRead + AsyncWrite, I: Iterator> {
 
 impl<R, I> Future for DialerSelectPar<R, I>
 where
-    I: Iterator,
-    I::Item: AsRef<[u8]>,
     R: AsyncRead + AsyncWrite,
+    I: Iterator,
+    I::Item: AsRef<[u8]> + Clone
 {
     type Item = (I::Item, R);
     type Error = ProtocolChoiceError;
@@ -363,7 +383,7 @@ where
                 DialerSelectParState::Protocol { mut dialer, proto_name } => {
                     trace!("requesting protocol: {:?}", proto_name.as_ref());
                     let req = DialerToListenerMessage::ProtocolRequest {
-                        name: proto_name.as_ref().into()
+                        name: proto_name.clone()
                     };
                     match dialer.start_send(req)? {
                         AsyncSink::Ready => {
