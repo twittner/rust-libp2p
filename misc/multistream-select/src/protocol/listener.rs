@@ -33,7 +33,7 @@ use unsigned_varint::{encode, codec::UviBytes, io::UviWriter};
 
 /// Wraps around a `AsyncRead+AsyncWrite`.
 /// Assumes that we're on the listener's side. Produces and accepts messages.
-pub struct Listener<R, N> {
+pub struct Listener<R: AsyncWrite, N> {
     stream: FramedRead<ReadHalf<R>, UviBytes>,
     sink: UviWriter<WriteHalf<R>>,
     state: State,
@@ -67,9 +67,10 @@ where
     /// Grants back the socket. Typically used after a `ProtocolRequest` has been received and a
     /// `ProtocolAck` has been sent back.
     #[inline]
-    pub fn into_inner(self) -> R {
-        if let Ok(r) = tokio_io::reunite(self.stream.into_inner(), self.sink.into_inner()) {
-            r
+    pub fn into_inner(self) -> std::io::Result<R> {
+        let w = self.sink.into_inner()?;
+        if let Ok(r) = tokio_io::reunite(self.stream.into_inner(), w) {
+            Ok(r)
         } else {
             unreachable!("XXX")
         }
@@ -205,7 +206,7 @@ where
 
 /// Future, returned by `Listener::new` which performs the handshake and returns
 /// the `Listener` if successful.
-pub struct ListenerFuture<R, N> {
+pub struct ListenerFuture<R: AsyncWrite, N> {
     listener: Option<Listener<R, N>>,
     state: ListenerFutureState
 }

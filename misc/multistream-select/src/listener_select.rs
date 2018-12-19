@@ -217,7 +217,8 @@ where
                         return Ok(Async::NotReady)
                     }
                     if let Some(p) = outcome {
-                        return Ok(Async::Ready((p, listener.into_inner(), protocols)))
+                        let l = listener.into_inner()?;
+                        return Ok(Async::Ready((p, l, protocols)))
                     } else {
                         let stream = listener.into_future();
                         self.inner = ListenerSelectState::Incoming { stream, protocols }

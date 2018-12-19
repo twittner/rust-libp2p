@@ -197,7 +197,8 @@ where
                         ListenerToDialerMessage::ProtocolAck { ref name }
                             if name.as_ref() == proto_name.as_ref() =>
                         {
-                            return Ok(Async::Ready((proto_name, r.into_inner())))
+                            let r = r.into_inner()?;
+                            return Ok(Async::Ready((proto_name, r)))
                         }
                         ListenerToDialerMessage::NotAvailable => {
                             let proto_name = protocols.next()
@@ -402,7 +403,8 @@ where
                         Some(ListenerToDialerMessage::ProtocolAck { ref name })
                             if name.as_ref() == proto_name.as_ref() =>
                         {
-                            return Ok(Async::Ready((proto_name, dialer.into_inner())))
+                            let r = dialer.into_inner()?;
+                            return Ok(Async::Ready((proto_name, r)))
                         }
                         _ => return Err(ProtocolChoiceError::UnexpectedMessage)
                     }

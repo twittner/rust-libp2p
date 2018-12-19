@@ -33,7 +33,7 @@ use unsigned_varint::{decode, codec::UviBytes, io::UviWriter};
 
 /// Wraps around a `AsyncRead + AsyncWrite`.
 /// Assumes that we're on the dialer's side. Produces and accepts messages.
-pub struct Dialer<R, N> {
+pub struct Dialer<R: AsyncWrite, N> {
     stream: FramedRead<ReadHalf<R>, UviBytes>,
     sink: UviWriter<WriteHalf<R>>,
     handshake_finished: bool,
@@ -70,9 +70,10 @@ where
 
     /// Grants back the socket. Typically used after a `ProtocolAck` has been received.
     #[inline]
-    pub fn into_inner(self) -> R {
-        if let Ok(r) = tokio_io::reunite(self.stream.into_inner(), self.sink.into_inner()) {
-            r
+    pub fn into_inner(self) -> std::io::Result<R> {
+        let w = self.sink.into_inner()?;
+        if let Ok(r) = tokio_io::reunite(self.stream.into_inner(), w) {
+            Ok(r)
         } else {
             unreachable!("xxx")
         }
@@ -194,7 +195,7 @@ where
 }
 
 /// Future, returned by `Dialer::new`, which send the handshake and returns the actual `Dialer`.
-pub struct DialerFuture<R, N> {
+pub struct DialerFuture<R: AsyncWrite, N> {
     dialer: Option<Dialer<R, N>>,
     offset: usize
 }
