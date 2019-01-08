@@ -38,6 +38,7 @@ use tokio_io::{AsyncRead, AsyncWrite};
 
 pub mod and_then;
 pub mod boxed;
+pub mod buffered;
 pub mod choice;
 pub mod map;
 pub mod map_err;
@@ -229,5 +230,14 @@ pub trait Transport {
         Self: Sized,
     {
         timeout::TransportTimeout::with_ingoing_timeout(self, timeout)
+    }
+
+    /// Add a read buffer and write buffer around `Transport::Output`.
+    #[inline]
+    fn buffered(self, bufsize: usize) -> buffered::BufferedTransport<Self>
+    where
+        Self: Sized
+    {
+        buffered::BufferedTransport::new(self, bufsize)
     }
 }
