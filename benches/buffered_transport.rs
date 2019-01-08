@@ -18,12 +18,15 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-extern crate criterion;
+#[macro_use]
+extern crate bencher;
+extern crate env_logger;
 extern crate futures;
 extern crate libp2p;
 extern crate tokio;
 
-use criterion::{Criterion, criterion_group, criterion_main};
+//use criterion::{Criterion, criterion_group, criterion_main};
+use bencher::Bencher;
 use futures::{future, prelude::*, stream};
 use libp2p::Transport;
 use std::{io, iter, sync::Arc};
@@ -43,9 +46,7 @@ fn run(bufsize: usize) {
             .into_future()
             .map_err(|(e, _)| e)
             .and_then(|(c, _)| c.unwrap().0)
-            .and_then(|conn| {
-                libp2p::core::muxing::inbound_from_ref_and_wrap(Arc::new(conn))
-            })
+            .and_then(|conn| libp2p::core::muxing::inbound_from_ref_and_wrap(Arc::new(conn)))
             .and_then(|stream| {
                 let io = Builder::new().new_framed(stream.unwrap());
                 io.concat2().map(|_| ())
@@ -62,19 +63,48 @@ fn run(bufsize: usize) {
             .and_then(|conn| libp2p::core::muxing::outbound_from_ref_and_wrap(Arc::new(conn)))
             .and_then(|stream| {
                 let io = Builder::new().new_framed(stream.unwrap());
-                let data = stream::iter_ok::<_, io::Error>(iter::repeat(b"xy"[..].into()).take(100));
-                io.send_all(data).map(|_| ())
+                let data = stream::iter_ok::<_, io::Error>(iter::repeat(b"xy"[..].into()).take(1000));
+                io.send_all(data).and_then(|(mut io, _)| {
+                    future::poll_fn(move || io.close())
+                })
             })
             .map_err(|e| panic!("client error: {:?}", e))
     }))
 }
 
-fn buffered_transport_benchmark(c: &mut Criterion) {
-    c.bench_function_over_inputs("buffered transport", |b, &&size| {
-        b.iter(|| run(size))
-    }, &[0, 16, 32, 64, 128]);
+//fn buffered_transport_benchmark(c: &mut Criterion) {
+//    c.bench_function_over_inputs("buffered transport", |b, &&size| {
+//        b.iter(|| run(size))
+//    }, &[0, 16, 32, 64, 128]);
+//}
+//
+//criterion_group!(benches, buffered_transport_benchmark);
+//criterion_main!(benches);
+
+fn a(b: &mut Bencher) {
+    let _ = env_logger::try_init();
+    b.iter(|| run(0))
 }
 
-criterion_group!(benches, buffered_transport_benchmark);
-criterion_main!(benches);
+fn b(b: &mut Bencher) {
+    let _ = env_logger::try_init();
+    b.iter(|| run(16))
+}
 
+fn c(b: &mut Bencher) {
+    let _ = env_logger::try_init();
+    b.iter(|| run(32))
+}
+
+fn d(b: &mut Bencher) {
+    let _ = env_logger::try_init();
+    b.iter(|| run(64))
+}
+
+fn e(b: &mut Bencher) {
+    let _ = env_logger::try_init();
+    b.iter(|| run(1024))
+}
+
+benchmark_group!(benches, a, b, c, d, e);
+benchmark_main!(benches);
