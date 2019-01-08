@@ -28,7 +28,7 @@ use std::{io, iter};
 use std::io::{Error as IoError};
 use tokio_io::{AsyncRead, AsyncWrite};
 
-
+#[derive(Debug)]
 pub struct Yamux<C>(yamux::Connection<C>);
 
 impl<C> Yamux<C>
@@ -112,7 +112,7 @@ where
 
 
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Config(yamux::Config);
 
 impl Config {

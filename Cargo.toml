@@ -44,11 +44,17 @@ libp2p-tcp = { version = "0.1.0", path = "./transports/tcp" }
 stdweb = { version = "0.4", default-features = false }
 
 [dev-dependencies]
+criterion = "0.2"
 env_logger = "0.6.0"
+futures = "0.1"
 rand = "0.6"
 tokio = "0.1"
 tokio-stdin-stdout = "0.1"
 void = "1.0"
+
+[[bench]]
+name = "buffered_transport"
+harness = false
 
 [workspace]
 members = [
