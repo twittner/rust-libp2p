@@ -96,6 +96,7 @@ use log::debug;
 use ring::signature::RSAKeyPair;
 use rw_stream_sink::RwStreamSink;
 use std::error::Error;
+use std::fmt;
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 use std::iter;
 use std::sync::Arc;
@@ -117,10 +118,11 @@ pub use crate::stream_cipher::Cipher;
 
 /// Implementation of the `ConnectionUpgrade` trait of `libp2p_core`. Automatically applies
 /// secio on any connection.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SecioConfig {
     /// Private and public keys of the local node.
     pub(crate) key: SecioKeyPair,
+    pub(crate) bufsize: usize,
     pub(crate) agreements_prop: Option<String>,
     pub(crate) ciphers_prop: Option<String>,
     pub(crate) digests_prop: Option<String>
@@ -131,10 +133,16 @@ impl SecioConfig {
     pub fn new(kp: SecioKeyPair) -> Self {
         SecioConfig {
             key: kp,
+            bufsize: 8192,
             agreements_prop: None,
             ciphers_prop: None,
             digests_prop: None
         }
+    }
+
+    pub fn buffer_size(mut self, value: usize) -> Self {
+        self.bufsize = value;
+        self
     }
 
     /// Override the default set of supported key agreement algorithms.
@@ -206,6 +214,14 @@ impl SecioConfig {
 #[derive(Clone)]
 pub struct SecioKeyPair {
     inner: SecioKeyPairInner,
+}
+
+impl fmt::Debug for SecioKeyPair {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_tuple("SecioKeyPair")
+            .field(&self.to_public_key())
+            .finish()
+    }
 }
 
 impl SecioKeyPair {
@@ -379,7 +395,7 @@ fn map_err(err: SecioError) -> IoError {
 ///
 /// Implements `Sink` and `Stream` whose items are frames of data. Each frame is encoded
 /// individually, so you are encouraged to group data in few frames if possible.
-pub struct SecioMiddleware<S> {
+pub struct SecioMiddleware<S: AsyncWrite> {
     inner: codec::FullCodec<S>,
 }
 

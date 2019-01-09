@@ -575,7 +575,8 @@ where
                 encoding_hmac,
                 decoding_cipher,
                 decoding_hmac,
-                context.state.remote.local.nonce.to_vec()
+                context.state.remote.local.nonce.to_vec(),
+                context.config.bufsize
             );
             Ok((codec, context))
         })

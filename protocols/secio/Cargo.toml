@@ -42,6 +42,12 @@ rsa = ["ring/rsa_signing"]
 aes-all = ["aesni", "lazy_static"]
 
 [dev-dependencies]
+bencher = "0.1"
+env_logger = "0.6"
 libp2p-tcp = { version = "0.1.0", path = "../../transports/tcp" }
 tokio = "0.1"
 tokio-tcp = "0.1"
+
+[[bench]]
+name = "buffered"
+harness = false

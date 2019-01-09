@@ -21,6 +21,11 @@
 //! Individual messages encoding and decoding. Use this after the algorithms have been
 //! successfully negotiated.
 
+mod buffered;
+mod decode;
+mod encode;
+
+use self::buffered::Buffered;
 use self::decode::DecoderMiddleware;
 use self::encode::EncoderMiddleware;
 
@@ -31,11 +36,8 @@ use sha2::{Sha256, Sha512};
 use tokio_io::codec::length_delimited;
 use tokio_io::{AsyncRead, AsyncWrite};
 
-mod decode;
-mod encode;
-
 /// Type returned by `full_codec`.
-pub type FullCodec<S> = DecoderMiddleware<EncoderMiddleware<length_delimited::Framed<S>>>;
+pub type FullCodec<S> = DecoderMiddleware<Buffered<EncoderMiddleware<length_delimited::Framed<S>>>>;
 
 pub type StreamCipher = Box<dyn StreamCipherCore + Send>;
 
@@ -109,13 +111,15 @@ pub fn full_codec<S>(
     encoding_hmac: Hmac,
     cipher_decoder: StreamCipher,
     decoding_hmac: Hmac,
-    remote_nonce: Vec<u8>
+    remote_nonce: Vec<u8>,
+    bufsize: usize
 ) -> FullCodec<S>
 where
     S: AsyncRead + AsyncWrite,
 {
     let encoder = EncoderMiddleware::new(socket, cipher_encoding, encoding_hmac);
-    DecoderMiddleware::new(encoder, cipher_decoder, decoding_hmac, remote_nonce)
+    let buffered = Buffered::new(encoder, bufsize);
+    DecoderMiddleware::new(buffered, cipher_decoder, decoding_hmac, remote_nonce)
 }
 
 #[cfg(test)]
@@ -196,7 +200,8 @@ mod tests {
                     Hmac::from_key(Digest::Sha256, &hmac_key),
                     ctr(cipher, &cipher_key[..key_size], &NULL_IV[..]),
                     Hmac::from_key(Digest::Sha256, &hmac_key),
-                    nonce2
+                    nonce2,
+                    8192
                 )
             },
         );
@@ -210,7 +215,8 @@ mod tests {
                     Hmac::from_key(Digest::Sha256, &hmac_key_clone),
                     ctr(cipher, &cipher_key_clone[..key_size], &NULL_IV[..]),
                     Hmac::from_key(Digest::Sha256, &hmac_key_clone),
-                    Vec::new()
+                    Vec::new(),
+                    8192
                 )
             });
 
