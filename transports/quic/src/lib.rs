@@ -27,7 +27,7 @@ use futures::{future, future::FutureResult, prelude::*, Async, Poll};
 use libp2p_core::{muxing::Shutdown, PeerId, PublicKey, StreamMuxer, Transport, TransportError};
 use log::{debug, warn};
 use multiaddr::{Multiaddr, Protocol};
-use openssl::{error::ErrorStack, pkey, rsa::Rsa, stack::StackRef, x509::{X509Ref, X509}};
+use openssl::{error::ErrorStack, pkey::{PKey, Private}, stack::StackRef, x509::{X509Ref, X509}};
 use parking_lot::Mutex;
 use picoquic;
 use std::{
@@ -37,43 +37,15 @@ use std::{
 };
 use tokio_executor::{Executor, SpawnError};
 
-#[derive(Clone)]
-pub struct SecretKey {
-    rsa: Rsa<pkey::Private>
-}
-
-impl SecretKey {
-    pub fn pem(k: &[u8]) -> Result<Self, QuicError> {
-        Ok(SecretKey {
-            rsa: Rsa::private_key_from_pem(k)?
-        })
-    }
-
-    pub fn der(k: &[u8]) -> Result<Self, QuicError> {
-        Ok(SecretKey {
-            rsa: Rsa::private_key_from_der(k)?
-        })
-    }
-
-    pub fn to_der(&self) -> Result<Vec<u8>, QuicError> {
-        Ok(self.rsa.private_key_to_der()?)
-    }
-
-    pub fn to_pem(&self) -> Result<Vec<u8>, QuicError> {
-        Ok(self.rsa.private_key_to_pem()?)
-    }
-
-    pub fn public_key(&self) -> Result<PublicKey, QuicError> {
-        Ok(self.rsa.public_key_to_der().map(PublicKey::Rsa)?)
-    }
-}
 
 /// Represents the configuration for a QUIC transport capability for libp2p.
 #[derive(Clone)]
 pub struct QuicConfig {
     executor: Exec,
-    /// RSA private key
-    private_key: SecretKey,
+    /// RSA private key.
+    private_key: Vec<u8>,
+    /// Root certificates.
+    certificates: Vec<Vec<u8>>,
     /// Address to use when establishing an outgoing IPv4 connection. Port can be 0 for "any port".
     /// If the port is 0, it will be different for each outgoing connection.
     ipv4_src_addr: SocketAddrV4,
@@ -92,13 +64,17 @@ impl fmt::Debug for QuicConfig {
 
 impl QuicConfig {
     /// Creates a new configuration object for QUIC.
-    pub fn new(e: impl Executor + Send + 'static, key: SecretKey) -> Self {
-        QuicConfig {
+    pub fn new<E>(e: E, private_key: &PKey<Private>, cert: &X509) -> Result<Self, QuicError>
+    where
+        E: Executor + Send + 'static
+    {
+        Ok(QuicConfig {
             executor: Exec { inner: Arc::new(Mutex::new(e))},
-            private_key: key,
+            private_key: private_key.private_key_to_der()?,
+            certificates: vec![cert.to_der()?],
             ipv4_src_addr: SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 0),
             ipv6_src_addr: SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0, 0, 0),
-        }
+        })
     }
 
     /// Sets the source port to use for outgoing connections.
@@ -127,9 +103,10 @@ impl Transport for QuicConfig {
         let public_keys = Arc::new(Mutex::new(Default::default()));
 
         let mut quic_config = picoquic::Config::new();
-        let der = self.private_key.to_der().map_err(Into::into)?;
-        quic_config.set_private_key(der, picoquic::FileFormat::DER);
+        quic_config.set_private_key(self.private_key.clone(), picoquic::FileFormat::DER);
+        quic_config.set_certificate_chain(self.certificates.clone(), picoquic::FileFormat::DER);
         quic_config.set_verify_certificate_handler(ListenCertifVerifier(public_keys.clone()));
+        quic_config.enable_client_authentication();
 
         let context = picoquic::Context::new(&listen_addr, self.executor.clone(), quic_config)
             .map_err(|e| TransportError::Other(e.into()))?;
@@ -164,8 +141,8 @@ impl Transport for QuicConfig {
         let public_key = Arc::new(Mutex::new(None));
 
         let mut quic_config = picoquic::Config::new();
-        let der = self.private_key.to_der().map_err(Into::into)?;
-        quic_config.set_private_key(der, picoquic::FileFormat::DER);
+        quic_config.set_private_key(self.private_key.clone(), picoquic::FileFormat::DER);
+        quic_config.set_certificate_chain(self.certificates.clone(), picoquic::FileFormat::DER);
         quic_config.set_verify_certificate_handler(DialCertifVerifier(public_key.clone()));
 
         let mut context = picoquic::Context::new(&listen_addr, self.executor.clone(), quic_config)
