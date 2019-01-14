@@ -80,3 +80,8 @@ members = [
     "transports/uds",
     "transports/websocket"
 ]
+
+[patch.crates-io]
+openssl = { path = "../../github/rust-openssl/openssl" }
+openssl-sys = { path = "../../github/rust-openssl/openssl-sys" }
+

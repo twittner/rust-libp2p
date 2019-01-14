@@ -36,6 +36,7 @@ const UNIX: u32 = 400;
 const UTP: u32 = 302;
 const WS: u32 = 477;
 const WSS: u32 = 478;
+const ED25519: u32 = 141325519;
 
 /// `Protocol` describes all possible multiaddress protocols.
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -65,7 +66,8 @@ pub enum Protocol<'a> {
     Unix(Cow<'a, str>),
     Utp,
     Ws,
-    Wss
+    Wss,
+    Ed25519(Cow<'a, [u8; 32]>)
 }
 
 impl<'a> Protocol<'a> {
@@ -138,6 +140,15 @@ impl<'a> Protocol<'a> {
             "p2p-webrtc-direct" => Ok(Protocol::P2pWebRtcDirect),
             "p2p-circuit" => Ok(Protocol::P2pCircuit),
             "memory" => Ok(Protocol::Memory),
+            "ed25519" => {
+                let s = iter.next().ok_or(Error::InvalidProtocolString)?;
+                let mut key = [0; 32];
+                let n = bs58::decode(s).into(&mut key)?;
+                if n != 32 {
+                    return Err(Error::InvalidProtocolString)
+                }
+                Ok(Protocol::Ed25519(Cow::Owned(key)))
+            }
             _ => Err(Error::UnknownProtocolString)
         }
     }
@@ -238,6 +249,10 @@ impl<'a> Protocol<'a> {
             UTP => Ok((Protocol::Utp, input)),
             WS => Ok((Protocol::Ws, input)),
             WSS => Ok((Protocol::Wss, input)),
+            ED25519 => {
+                let (data, rest) = split_at(32, input)?;
+                Ok((Protocol::Ed25519(Cow::Borrowed(array_ref!(data, 0, 32))), rest))
+            }
             _ => Err(Error::UnknownProtocolId(id))
         }
     }
@@ -313,7 +328,11 @@ impl<'a> Protocol<'a> {
             Protocol::P2pWebRtcStar => w.write_all(encode::u32(P2P_WEBRTC_STAR, &mut buf))?,
             Protocol::P2pWebRtcDirect => w.write_all(encode::u32(P2P_WEBRTC_DIRECT, &mut buf))?,
             Protocol::P2pCircuit => w.write_all(encode::u32(P2P_CIRCUIT, &mut buf))?,
-            Protocol::Memory => w.write_all(encode::u32(MEMORY, &mut buf))?
+            Protocol::Memory => w.write_all(encode::u32(MEMORY, &mut buf))?,
+            Protocol::Ed25519(key) => {
+                w.write_all(encode::u32(ED25519, &mut buf))?;
+                w.write_all(&key[..])?
+            }
         }
         Ok(())
     }
@@ -344,7 +363,8 @@ impl<'a> Protocol<'a> {
             Unix(cow) => Unix(Cow::Owned(cow.into_owned())),
             Utp => Utp,
             Ws => Ws,
-            Wss => Wss
+            Wss => Wss,
+            Ed25519(k) => Ed25519(Cow::Owned(k.into_owned()))
         }
     }
 }
@@ -379,6 +399,7 @@ impl<'a> fmt::Display for Protocol<'a> {
             Utp => f.write_str("/utp"),
             Ws => f.write_str("/ws"),
             Wss => f.write_str("/wss"),
+            Ed25519(k) => write!(f, "/ed25519/{}", bs58::encode(&k[..]).into_string())
         }
     }
 }

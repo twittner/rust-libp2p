@@ -27,25 +27,37 @@ use futures::{future, future::FutureResult, prelude::*, Async, Poll};
 use libp2p_core::{muxing::Shutdown, PeerId, PublicKey, StreamMuxer, Transport, TransportError};
 use log::{debug, warn};
 use multiaddr::{Multiaddr, Protocol};
-use openssl::{error::ErrorStack, pkey::{PKey, Private}, stack::StackRef, x509::{X509Ref, X509}};
+use openssl::{
+    bn::BigNumContext,
+    ec::{EcGroup, EcKey, EcPoint, EcPointRef, PointConversionForm},
+    error::ErrorStack,
+    hash::MessageDigest,
+    nid::Nid,
+    pkey::{PKey, Private, Public},
+    stack::StackRef,
+    x509::{X509Ref, X509, X509Builder}
+};
 use parking_lot::Mutex;
 use picoquic;
 use std::{
     cmp, fmt, io, iter,
+    collections::HashMap,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::Arc
 };
 use tokio_executor::{Executor, SpawnError};
 
+type Ed25519 = [u8; 32];
 
 /// Represents the configuration for a QUIC transport capability for libp2p.
 #[derive(Clone)]
 pub struct QuicConfig {
     executor: Exec,
-    /// RSA private key.
-    private_key: Vec<u8>,
-    /// Root certificates.
-    certificates: Vec<Vec<u8>>,
+    group: Arc<EcGroup>,
+    /// Private key
+    private_key: Arc<PKey<Private>>,
+    /// certificates
+    certificates: HashMap<Ed25519, Vec<u8>>,
     /// Address to use when establishing an outgoing IPv4 connection. Port can be 0 for "any port".
     /// If the port is 0, it will be different for each outgoing connection.
     ipv4_src_addr: SocketAddrV4,
@@ -64,14 +76,23 @@ impl fmt::Debug for QuicConfig {
 
 impl QuicConfig {
     /// Creates a new configuration object for QUIC.
-    pub fn new<E>(e: E, private_key: &PKey<Private>, cert: &X509) -> Result<Self, QuicError>
+    pub fn new<E>(e: E, secret: EcKey<Private>) -> Result<Self, QuicError>
     where
         E: Executor + Send + 'static
     {
+        let group = EcGroup::from_curve_name(Nid::ED25519)?;
+        let pkey = PKey::from_ec_key(EcKey::from_public_key(&group, secret.public_key())?)?;
+        let skey = PKey::from_ec_key(secret)?;
+        let cert = certify(&skey, &pkey)?;
+
+        let mut certificates = HashMap::new();
+        certificates.insert(ed25519_bytes(&group, pkey.ec_key()?.public_key())?, cert.to_der()?);
+
         Ok(QuicConfig {
             executor: Exec { inner: Arc::new(Mutex::new(e))},
-            private_key: private_key.private_key_to_der()?,
-            certificates: vec![cert.to_der()?],
+            group: Arc::new(group),
+            private_key: Arc::new(skey),
+            certificates,
             ipv4_src_addr: SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 0),
             ipv6_src_addr: SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0), 0, 0, 0),
         })
@@ -95,7 +116,7 @@ impl Transport for QuicConfig {
     type Dial = QuicDialFut;
 
     fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), TransportError<Self::Error>> {
-        let listen_addr = match multiaddr_to_socketaddr(&addr) {
+        let (listen_addr, _) = match multiaddr_to_socketaddr(&addr) {
             Ok(sa) => sa,
             Err(_) => return Err(TransportError::MultiaddrNotSupported(addr))
         };
@@ -103,10 +124,11 @@ impl Transport for QuicConfig {
         let public_keys = Arc::new(Mutex::new(Default::default()));
 
         let mut quic_config = picoquic::Config::new();
-        quic_config.set_private_key(self.private_key.clone(), picoquic::FileFormat::DER);
-        quic_config.set_certificate_chain(self.certificates.clone(), picoquic::FileFormat::DER);
+        let skey = self.private_key.private_key_to_der()
+            .map_err(QuicError::OpenSsl)
+            .map_err(TransportError::Other)?;
+        quic_config.set_private_key(skey, picoquic::FileFormat::DER);
         quic_config.set_verify_certificate_handler(ListenCertifVerifier(public_keys.clone()));
-        quic_config.enable_client_authentication();
 
         let context = picoquic::Context::new(&listen_addr, self.executor.clone(), quic_config)
             .map_err(|e| TransportError::Other(e.into()))?;
@@ -117,10 +139,10 @@ impl Transport for QuicConfig {
         Ok((QuicListenStream { inner: context, public_keys }, actual_addr))
     }
 
-    fn dial(self, addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
-        let target_addr = match multiaddr_to_socketaddr(&addr) {
-            Ok(sa) => sa,
-            Err(_) => return Err(TransportError::MultiaddrNotSupported(addr))
+    fn dial(mut self, addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
+        let (target_addr, key) = match multiaddr_to_socketaddr(&addr) {
+            Ok((sa, Some(k))) => (sa, k),
+            Ok(_) | Err(_) => return Err(TransportError::MultiaddrNotSupported(addr))
         };
 
         // As an optimization, we check that the address is not of the form `0.0.0.0`.
@@ -132,6 +154,25 @@ impl Transport for QuicConfig {
 
         debug!("Dialing {}", addr);
 
+        let mut bnctx = BigNumContext::new()
+            .map_err(QuicError::OpenSsl)
+            .map_err(TransportError::Other)?;
+        let point = EcPoint::from_bytes(&self.group, &key, &mut bnctx)
+            .map_err(QuicError::OpenSsl)
+            .map_err(TransportError::Other)?;
+        let pubkey = EcKey::from_public_key(&self.group, &point)
+            .map_err(QuicError::OpenSsl)
+            .map_err(TransportError::Other)?;
+        let pubkey = PKey::from_ec_key(pubkey)
+            .map_err(QuicError::OpenSsl)
+            .map_err(TransportError::Other)?;
+        let cert = certify(&self.private_key, &pubkey)
+            .and_then(|c| c.to_der())
+            .map_err(QuicError::OpenSsl)
+            .map_err(TransportError::Other)?;
+
+        self.certificates.insert(key, cert);
+
         let listen_addr = if target_addr.is_ipv4() {
             SocketAddr::from(self.ipv4_src_addr.clone())
         } else {
@@ -140,9 +181,13 @@ impl Transport for QuicConfig {
 
         let public_key = Arc::new(Mutex::new(None));
 
+        let skey = self.private_key.private_key_to_der()
+            .map_err(QuicError::OpenSsl)
+            .map_err(TransportError::Other)?;
+
         let mut quic_config = picoquic::Config::new();
-        quic_config.set_private_key(self.private_key.clone(), picoquic::FileFormat::DER);
-        quic_config.set_certificate_chain(self.certificates.clone(), picoquic::FileFormat::DER);
+        quic_config.set_private_key(skey, picoquic::FileFormat::DER);
+        quic_config.set_root_certificates(vec![self.certificates.get(&key).unwrap().clone()], picoquic::FileFormat::DER);
         quic_config.set_verify_certificate_handler(DialCertifVerifier(public_key.clone()));
 
         let mut context = picoquic::Context::new(&listen_addr, self.executor.clone(), quic_config)
@@ -157,6 +202,22 @@ impl Transport for QuicConfig {
         // TODO: implement after https://github.com/libp2p/rust-libp2p/pull/550
         None
     }
+}
+
+fn certify(sk: &PKey<Private>, pk: &PKey<Public>) -> Result<X509, ErrorStack> {
+    let mut builder = X509Builder::new()?;
+    builder.set_pubkey(&pk)?;
+    builder.sign(&sk, MessageDigest::sha256())?;
+    Ok(builder.build())
+}
+
+fn ed25519_bytes(g: &EcGroup, k: &EcPointRef) -> Result<[u8; 32], ErrorStack> {
+    let mut ctx = BigNumContext::new()?;
+    let bytes = k.to_bytes(g, PointConversionForm::COMPRESSED, &mut ctx)?;
+    assert_eq!(32, bytes.len());
+    let mut result = [0; 32];
+    (&mut result).copy_from_slice(&bytes);
+    Ok(result)
 }
 
 #[derive(Clone)]
@@ -310,22 +371,29 @@ impl StreamMuxer for QuicMuxer {
 }
 
 /// If `addr` is a QUIC address, returns the corresponding `SocketAddr`.
-fn multiaddr_to_socketaddr(addr: &Multiaddr) -> Result<SocketAddr, ()> {
+fn multiaddr_to_socketaddr(addr: &Multiaddr) -> Result<(SocketAddr, Option<Ed25519>), ()> {
     let mut iter = addr.iter();
     let proto1 = iter.next().ok_or(())?;
     let proto2 = iter.next().ok_or(())?;
     let proto3 = iter.next().ok_or(())?;
+    let proto4 = iter.next();
 
     if iter.next().is_some() {
         return Err(());
     }
 
-    match (proto1, proto2, proto3) {
-        (Protocol::Ip4(ip), Protocol::Udp(port), Protocol::Quic) => {
-            Ok(SocketAddr::new(ip.into(), port))
+    match (proto1, proto2, proto3, proto4) {
+        (Protocol::Ip4(ip), Protocol::Udp(port), Protocol::Quic, None) => {
+            Ok((SocketAddr::new(ip.into(), port), None))
         }
-        (Protocol::Ip6(ip), Protocol::Udp(port), Protocol::Quic) => {
-            Ok(SocketAddr::new(ip.into(), port))
+        (Protocol::Ip6(ip), Protocol::Udp(port), Protocol::Quic, None) => {
+            Ok((SocketAddr::new(ip.into(), port), None))
+        }
+        (Protocol::Ip4(ip), Protocol::Udp(port), Protocol::Quic, Some(Protocol::Ed25519(k))) => {
+            Ok((SocketAddr::new(ip.into(), port), Some(k.into_owned())))
+        }
+        (Protocol::Ip6(ip), Protocol::Udp(port), Protocol::Quic, Some(Protocol::Ed25519(k))) => {
+            Ok((SocketAddr::new(ip.into(), port), Some(k.into_owned())))
         }
         _ => Err(()),
     }

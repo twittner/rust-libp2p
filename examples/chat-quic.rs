@@ -60,35 +60,49 @@ extern crate void;
 
 use futures::prelude::*;
 use libp2p::{NetworkBehaviour, core::PublicKey, tokio_codec::{FramedRead, LinesCodec}};
-use openssl::{pkey::PKey, rsa::Rsa, x509::X509Builder, hash::MessageDigest};
+use openssl::{ec::{EcGroup, EcKey}, nid::Nid, pkey::PKey};
 use quicli::prelude::*;
 use structopt::StructOpt;
-use std::io;
+use std::{fs::File, io::{self, Write}};
 
 #[derive(Debug, StructOpt)]
-struct Cli {
-    #[structopt(long = "key", short = "k")]
-    key: String,
+enum Cli {
+    #[structopt(name = "gen")]
+    Gen {
+        #[structopt(long = "out", short = "o")]
+        out: String
+    },
+    #[structopt(name = "run")]
+    Run {
+        #[structopt(long = "key", short = "k")]
+        key: String,
 
-    #[structopt(long = "dial", short = "d")]
-    dial: Option<String>
+        #[structopt(long = "dial", short = "d")]
+        dial: Option<String>
+    }
 }
 
 fn main() -> CliResult {
     env_logger::init();
 
-    let args = Cli::from_args();
+    let (key, dial) = match Cli::from_args() {
+        Cli::Gen { out }=> {
+            let g = EcGroup::from_curve_name(Nid::ED25519)?;
+            let k = EcKey::generate(&g)?.private_key_to_pem()?;
+            let mut f = File::create(out)?;
+            f.write_all(&k)?;
+            return Ok(())
+        }
+        Cli::Run { key, dial } => (key, dial)
+    };
 
-    let private_key = PKey::from_rsa(Rsa::private_key_from_pem(read_file(&args.key)?.as_bytes())?)?;
-    let mut certificate = X509Builder::new()?;
-    certificate.set_pubkey(&private_key)?;
-    certificate.sign(&private_key, MessageDigest::sha256())?;
-    let public_key = PublicKey::Rsa(private_key.public_key_to_der()?);
+    let private_key = PKey::private_key_from_pem(read_file(&key)?.as_bytes())?;
+    let public_key = PublicKey::Ed25519(private_key.public_key_to_der()?);
 
     let rt = tokio::runtime::Runtime::new()?;
 
     // Set up a an encrypted DNS-enabled TCP Transport over the Mplex and Yamux protocols
-    let transport = libp2p_quic::QuicConfig::new(rt.executor(), &private_key, &certificate.build())?;
+    let transport = libp2p_quic::QuicConfig::new(rt.executor(), private_key.ec_key()?)?;
 
     // Create a Floodsub topic
     let floodsub_topic = libp2p::floodsub::TopicBuilder::new("chat").build();
@@ -132,7 +146,7 @@ fn main() -> CliResult {
     println!("Listening on {:?}", addr);
 
     // Reach out to another node if specified
-    if let Some(to_dial) = args.dial {
+    if let Some(to_dial) = dial {
         let dialing = to_dial.clone();
         match to_dial.parse() {
             Ok(to_dial) => {
