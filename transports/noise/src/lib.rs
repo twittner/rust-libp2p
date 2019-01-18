@@ -20,33 +20,32 @@
 
 mod error;
 
-use crate::error::NoiseError;
+use error::NoiseError;
 use curve25519_dalek::{
-    constants::ED25519_BASEPOINT_POINT,
-    edwards::CompressedEdwardsY,
+    constants::X25519_BASEPOINT,
+    montgomery::MontgomeryPoint,
     scalar::Scalar
 };
-use futures::{future::FutureResult, prelude::*};
-use libp2p_core::{Multiaddr, Transport, TransportError};
+use futures::{prelude::*, try_ready};
+use libp2p_core::{multiaddr::{Multiaddr, Protocol}, PeerId, Transport, TransportError};
 use snow;
-use std::{io, sync::Arc};
+use std::{io, mem, sync::Arc};
 use tokio_io::{AsyncRead, AsyncWrite};
 
-pub type Result<T> = std::result::Result<T, NoiseError>;
-
-const PATTERN: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2b";
+const PATTERN: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 const MAX_MSG_BUF: usize = 64000;
 
+/// Curve25519 keypair.
 pub struct Keypair {
     secret: Scalar,
-    public: CompressedEdwardsY
+    public: MontgomeryPoint
 }
 
 impl Keypair {
     pub fn fresh() -> Self {
         let s = Scalar::random(&mut rand::thread_rng());
-        let p = s * ED25519_BASEPOINT_POINT;
-        Keypair { secret: s, public: p.compress() }
+        let p = s * X25519_BASEPOINT;
+        Keypair { secret: s, public: p }
     }
 
     pub fn secret(&self) -> &[u8; 32] {
@@ -75,19 +74,49 @@ impl<T: Transport> NoiseConfig<T> {
     }
 }
 
-impl<T: Transport> Transport for NoiseConfig<T> {
-    type Output = NoiseOutput<T::Output>;
-    type Error = NoiseError;
+impl<T> Transport for NoiseConfig<T>
+where
+    T: Transport,
+    T::Output: AsyncRead + AsyncWrite,
+    T::Error: 'static
+{
+    type Output = (PeerId, NoiseOutput<T::Output>);
+    type Error = NoiseError<T::Error>;
     type Listener = NoiseListener<T::Listener>;
-    type ListenerUpgrade = FutureResult<Self::Output, NoiseError>;
-    type Dial = NoiseDial<T::Dial>;
+    type ListenerUpgrade = NoiseListenFuture<T::ListenerUpgrade>;
+    type Dial = NoiseDialFuture<T::Dial>;
 
-    fn listen_on(self, addr: Multiaddr) -> std::result::Result<(Self::Listener, Multiaddr), TransportError<Self::Error>> {
-        unimplemented!()
+    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, Multiaddr), TransportError<Self::Error>> {
+        let (listener, addr) = self.transport.listen_on(addr)
+            .map_err(|e| match e {
+                TransportError::MultiaddrNotSupported(a) => TransportError::MultiaddrNotSupported(a),
+                TransportError::Other(e) => TransportError::Other(NoiseError::Inner(e))
+            })?;
+
+        Ok((NoiseListener { listener, keypair: self.keypair, params: self.params }, addr))
     }
 
-    fn dial(self, addr: Multiaddr) -> std::result::Result<Self::Dial, TransportError<Self::Error>> {
-        unimplemented!()
+    fn dial(self, addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
+        let pubkey =
+            if let Some(Protocol::Curve25519(key)) = addr.iter().last() {
+                MontgomeryPoint(key.into_owned())
+            } else {
+                return Err(TransportError::MultiaddrNotSupported(addr))
+            };
+
+        let dial = self.transport.dial(addr)
+            .map_err(|e| match e {
+                TransportError::MultiaddrNotSupported(a) => TransportError::MultiaddrNotSupported(a),
+                TransportError::Other(e) => TransportError::Other(NoiseError::Inner(e))
+            })?;
+
+        let session = snow::Builder::new(self.params.clone())
+            .local_private_key(self.keypair.secret())
+            .remote_public_key(pubkey.as_bytes())
+            .build_initiator()
+            .map_err(|e| TransportError::Other(NoiseError::Noise(e)))?;
+
+        Ok(NoiseDialFuture(DialState::Init(dial, session)))
     }
 
     fn nat_traversal(&self, server: &Multiaddr, observed: &Multiaddr) -> Option<Multiaddr> {
@@ -96,29 +125,197 @@ impl<T: Transport> Transport for NoiseConfig<T> {
 }
 
 pub struct NoiseListener<T> {
-    listener: T
+    listener: T,
+    keypair: Arc<Keypair>,
+    params: snow::params::NoiseParams
 }
 
-impl<T: Stream> Stream for NoiseListener<T> {
-    type Item = (); //TODO!
-    type Error= NoiseError;
+impl<T, F> Stream for NoiseListener<T>
+where
+    T: Stream<Item = (F, Multiaddr)>,
+    F: Future,
+    F::Item: AsyncRead + AsyncWrite
+{
+    type Item = (NoiseListenFuture<F>, Multiaddr);
+    type Error= NoiseError<T::Error>;
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        unimplemented!()
+    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        if let Some((future, addr)) = try_ready!(self.listener.poll().map_err(NoiseError::Inner)) {
+            let session = snow::Builder::new(self.params.clone())
+                .local_private_key(self.keypair.secret())
+                .build_responder()?;
+            Ok(Async::Ready(Some((NoiseListenFuture(ListenState::Init(future, session)), addr))))
+        } else {
+            Ok(Async::Ready(None))
+        }
     }
 }
 
-pub struct NoiseDial<T> {
-    dial: T
+pub struct NoiseListenFuture<T: Future>(ListenState<T>);
+
+enum ListenState<T: Future> {
+    Init(T, snow::Session),
+    RecvHandshake(NoiseOutput<T::Item>),
+    SendHandshake(NoiseOutput<T::Item>),
+    Flush(NoiseOutput<T::Item>),
+    Done
 }
 
-impl<T: Future> Future for NoiseDial<T> {
-    type Item = NoiseOutput<T::Item>;
-    type Error = NoiseError;
+impl<T> Future for NoiseListenFuture<T>
+where
+    T: Future,
+    T::Item: AsyncRead + AsyncWrite
+{
+    type Item = (PeerId, NoiseOutput<T::Item>);
+    type Error = NoiseError<T::Error>;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        unimplemented!()
+        loop {
+            match mem::replace(&mut self.0, ListenState::Done) {
+                ListenState::Init(mut future, session) => {
+                    if let Async::Ready(io) = future.poll().map_err(NoiseError::Inner)? {
+                        let output = NoiseOutput {
+                            io, session,
+                            buf_enc: Box::new([0; 65535]),
+                            buf_dec: Box::new([0; 65535]),
+                            state: State::Init
+                        };
+                        self.0 = ListenState::RecvHandshake(output)
+                    } else {
+                        mem::replace(&mut self.0, ListenState::Init(future, session));
+                        return Ok(Async::NotReady)
+                    }
+                }
+                ListenState::RecvHandshake(mut io) => {
+                    // -> e, es, s, ss
+                    if io.poll_read(&mut []).map_err(NoiseError::Io)?.is_ready() {
+                        self.0 = ListenState::SendHandshake(io)
+                    } else {
+                        mem::replace(&mut self.0, ListenState::RecvHandshake(io));
+                        return Ok(Async::NotReady)
+                    }
+                }
+                ListenState::SendHandshake(mut io) => {
+                    // <- e, ee, se
+                    if io.poll_write(&[]).map_err(NoiseError::Io)?.is_ready() {
+                        self.0 = ListenState::Flush(io)
+                    } else {
+                        mem::replace(&mut self.0, ListenState::SendHandshake(io));
+                        return Ok(Async::NotReady)
+                    }
+                }
+                ListenState::Flush(mut io) => {
+                    if io.poll_flush().map_err(NoiseError::Io)?.is_ready() {
+                        let s = io.session.into_transport_mode()?;
+                        let m = s.get_remote_static()
+                            .ok_or(NoiseError::InvalidKey)
+                            .and_then(montgomery)?;
+                        let io = NoiseOutput {
+                            io: io.io,
+                            session: s,
+                            buf_enc: io.buf_enc,
+                            buf_dec: io.buf_dec,
+                            state: io.state
+                        };
+                        self.0 = ListenState::Done;
+                        return Ok(Async::Ready((PeerId::encode(m.as_bytes()), io)))
+                    } else {
+                        mem::replace(&mut self.0, ListenState::Flush(io));
+                        return Ok(Async::NotReady)
+                    }
+                }
+                ListenState::Done => panic!("NoiseListenFuture::poll called after completion")
+            }
+        }
     }
+}
+
+pub struct NoiseDialFuture<T: Future>(DialState<T>);
+
+enum DialState<T: Future> {
+    Init(T, snow::Session),
+    SendHandshake(NoiseOutput<T::Item>),
+    Flush(NoiseOutput<T::Item>),
+    RecvHandshake(NoiseOutput<T::Item>),
+    Done
+}
+
+impl<T> Future for NoiseDialFuture<T>
+where
+    T: Future,
+    T::Item: AsyncRead + AsyncWrite
+{
+    type Item = (PeerId, NoiseOutput<T::Item>);
+    type Error = NoiseError<T::Error>;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        loop {
+            match mem::replace(&mut self.0, DialState::Done) {
+                DialState::Init(mut future, session) => {
+                    if let Async::Ready(io) = future.poll().map_err(NoiseError::Inner)? {
+                        let output = NoiseOutput {
+                            io, session,
+                            buf_enc: Box::new([0; 65535]),
+                            buf_dec: Box::new([0; 65535]),
+                            state: State::Init
+                        };
+                        self.0 = DialState::SendHandshake(output)
+                    } else {
+                        mem::replace(&mut self.0, DialState::Init(future, session));
+                        return Ok(Async::NotReady)
+                    }
+                }
+                DialState::SendHandshake(mut io) => {
+                    // -> e, es, s, ss
+                    if io.poll_write(&[]).map_err(NoiseError::Io)?.is_ready() {
+                        self.0 = DialState::Flush(io)
+                    } else {
+                        mem::replace(&mut self.0, DialState::SendHandshake(io));
+                        return Ok(Async::NotReady)
+                    }
+                }
+                DialState::Flush(mut io) => {
+                    if io.poll_flush().map_err(NoiseError::Io)?.is_ready() {
+                        self.0 = DialState::RecvHandshake(io)
+                    } else {
+                        mem::replace(&mut self.0, DialState::Flush(io));
+                        return Ok(Async::NotReady)
+                    }
+                }
+                DialState::RecvHandshake(mut io) => {
+                    // <- e, ee, se
+                    if io.poll_read(&mut []).map_err(NoiseError::Io)?.is_ready() {
+                        let s = io.session.into_transport_mode()?;
+                        let m = s.get_remote_static()
+                            .ok_or(NoiseError::InvalidKey)
+                            .and_then(montgomery)?;
+                        let io = NoiseOutput {
+                            io: io.io,
+                            session: s,
+                            buf_enc: io.buf_enc,
+                            buf_dec: io.buf_dec,
+                            state: io.state
+                        };
+                        self.0 = DialState::Done;
+                        return Ok(Async::Ready((PeerId::encode(m.as_bytes()), io)))
+                    } else {
+                        mem::replace(&mut self.0, DialState::RecvHandshake(io));
+                        return Ok(Async::NotReady)
+                    }
+                }
+                DialState::Done => panic!("NoiseDialFuture::poll called after completion")
+            }
+        }
+    }
+}
+
+fn montgomery<E>(bytes: &[u8]) -> Result<MontgomeryPoint, NoiseError<E>> {
+    if bytes.len() != 32 {
+        return Err(NoiseError::InvalidKey)
+    }
+    let mut m = MontgomeryPoint([0; 32]);
+    (&mut m.0).copy_from_slice(bytes);
+    Ok(m)
 }
 
 pub struct NoiseOutput<T> {
@@ -138,6 +335,8 @@ enum State {
     CopyData { len: usize, off: usize },
     /// accumulate write data
     AccData { len: usize },
+    /// write frame length
+    WriteLen { len: usize },
     /// write out encrypted data
     WriteData { len: usize, off: usize },
     /// end of file has been reached (terminal state)
@@ -188,7 +387,7 @@ impl<T: io::Read> io::Read for NoiseOutput<T> {
                     }
                     return Ok(n)
                 }
-                State::AccData {..} | State::WriteData {..} | State::EncErr => {
+                State::AccData {..} | State::WriteLen {..} | State::WriteData {..} | State::EncErr => {
                     self.state = State::InvState
                 }
                 State::EOF => return Ok(0),
@@ -201,6 +400,7 @@ impl<T: io::Read> io::Read for NoiseOutput<T> {
 
 impl<T: io::Write> io::Write for NoiseOutput<T> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        use byteorder::{BigEndian, WriteBytesExt};
         loop {
             match self.state {
                 State::Init => {
@@ -212,13 +412,17 @@ impl<T: io::Write> io::Write for NoiseOutput<T> {
                     *len += n;
                     if *len == MAX_MSG_BUF {
                         if let Ok(n) = self.session.write_message(&self.buf_dec[..*len], &mut self.buf_enc[..]) {
-                            self.state = State::WriteData { len: n, off: 0 }
+                            self.state = State::WriteLen { len: n }
                         } else {
                             self.state = State::EncErr;
                             return Err(io::ErrorKind::InvalidData.into())
                         }
                     }
                     return Ok(n)
+                }
+                State::WriteLen { len } => {
+                    self.io.write_u16::<BigEndian>(len as u16)?;
+                    self.state = State::WriteData { len, off: 0 }
                 }
                 State::WriteData { len, ref mut off } => {
                     let n = self.io.write(&self.buf_enc[*off..len])?;
@@ -242,15 +446,20 @@ impl<T: io::Write> io::Write for NoiseOutput<T> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        use byteorder::{BigEndian, WriteBytesExt};
         loop {
             match self.state {
                 State::AccData { len } => {
                     if let Ok(n) = self.session.write_message(&self.buf_dec[..len], &mut self.buf_enc[..]) {
-                        self.state = State::WriteData { len: n, off: 0 }
+                        self.state = State::WriteLen { len: n }
                     } else {
                         self.state = State::EncErr;
                         return Err(io::ErrorKind::InvalidData.into())
                     }
+                }
+                State::WriteLen { len } => {
+                    self.io.write_u16::<BigEndian>(len as u16)?;
+                    self.state = State::WriteData { len, off: 0 }
                 }
                 State::WriteData { len, ref mut off } => {
                     let n = self.io.write(&self.buf_enc[*off..len])?;

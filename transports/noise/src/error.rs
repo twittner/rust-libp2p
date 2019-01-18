@@ -22,40 +22,46 @@ use snow::SnowError;
 use std::{error::Error, fmt, io};
 
 #[derive(Debug)]
-pub enum NoiseError {
+pub enum NoiseError<E> {
     Io(io::Error),
     Noise(SnowError),
+    InvalidKey,
+    Inner(E),
     #[doc(hidden)]
     __Nonexhaustive
 }
 
-impl fmt::Display for NoiseError {
+impl<E: fmt::Display> fmt::Display for NoiseError<E> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             NoiseError::Io(e) => write!(f, "i/o: {:?}", e),
             NoiseError::Noise(e) => write!(f, "noise: {:?}", e),
+            NoiseError::Inner(e) => write!(f, "{}", e),
+            NoiseError::InvalidKey => f.write_str("invalid public key"),
             NoiseError::__Nonexhaustive => f.write_str("__Nonexhaustive")
         }
     }
 }
 
-impl Error for NoiseError {
+impl<E: Error + 'static> Error for NoiseError<E> {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             NoiseError::Io(e) => Some(e),
+            NoiseError::Inner(e) => Some(e),
             NoiseError::Noise(_) => None, // TODO: `SnowError` should implement `Error`.
+            NoiseError::InvalidKey => None,
             NoiseError::__Nonexhaustive => None
         }
     }
 }
 
-impl From<io::Error> for NoiseError {
+impl<E> From<io::Error> for NoiseError<E> {
     fn from(e: io::Error) -> Self {
         NoiseError::Io(e)
     }
 }
 
-impl From<SnowError> for NoiseError {
+impl<E> From<SnowError> for NoiseError<E> {
     fn from(e: SnowError) -> Self {
         NoiseError::Noise(e)
     }
