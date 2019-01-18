@@ -18,23 +18,17 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-extern crate env_logger;
-extern crate futures;
-extern crate libp2p;
-extern crate quicli;
-extern crate structopt;
-extern crate tokio;
-extern crate void;
-
+use env_logger;
 use futures::prelude::*;
 use libp2p::{
-    NetworkBehaviour, Transport, InboundUpgradeExt, OutboundUpgradeExt,
+    self, NetworkBehaviour, Transport, InboundUpgradeExt, OutboundUpgradeExt,
     core::{PublicKey, PeerId},
     tokio_codec::{FramedRead, LinesCodec}
 };
 use quicli::prelude::*;
 use structopt::StructOpt;
 use std::io;
+use tokio::runtime::Runtime;
 
 #[derive(Debug, StructOpt)]
 struct Cli {
@@ -112,7 +106,7 @@ fn main() -> CliResult {
     let mut framed_stdin = FramedRead::new(stdin, LinesCodec::new());
 
     // Kick it off
-    tokio::runtime::Runtime::new()?.block_on_all(futures::future::poll_fn(move || {
+    Runtime::new()?.block_on_all(futures::future::poll_fn(move || {
         loop {
             match framed_stdin.poll()? {
                 Async::Ready(Some(line)) => swarm.floodsub.publish(&floodsub_topic, line.as_bytes()),
