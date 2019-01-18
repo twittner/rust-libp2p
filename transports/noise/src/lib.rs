@@ -28,6 +28,7 @@ use curve25519_dalek::{
 };
 use futures::{prelude::*, try_ready};
 use libp2p_core::{multiaddr::{Multiaddr, Protocol}, PeerId, Transport, TransportError};
+use log::{debug, trace};
 use snow;
 use std::{io, mem, sync::Arc};
 use tokio_io::{AsyncRead, AsyncWrite};
@@ -35,25 +36,40 @@ use tokio_io::{AsyncRead, AsyncWrite};
 const PATTERN: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 const MAX_MSG_BUF: usize = 64000;
 
+#[derive(Clone, Debug)]
+pub struct PublicKey(MontgomeryPoint);
+
+impl PublicKey {
+    pub fn base58_encoded(&self) -> String {
+        bs58::encode(self.0.as_bytes()).into_string()
+    }
+}
+
+impl AsRef<[u8]> for PublicKey {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
 /// Curve25519 keypair.
 pub struct Keypair {
     secret: Scalar,
-    public: MontgomeryPoint
+    public: PublicKey
 }
 
 impl Keypair {
     pub fn fresh() -> Self {
         let s = Scalar::random(&mut rand::thread_rng());
         let p = s * X25519_BASEPOINT;
-        Keypair { secret: s, public: p }
+        Keypair { secret: s, public: PublicKey(p) }
     }
 
     pub fn secret(&self) -> &[u8; 32] {
         self.secret.as_bytes()
     }
 
-    pub fn public(&self) -> &[u8; 32] {
-        self.public.as_bytes()
+    pub fn public(&self) -> &PublicKey {
+        &self.public
     }
 }
 
@@ -93,22 +109,31 @@ where
                 TransportError::Other(e) => TransportError::Other(NoiseError::Inner(e))
             })?;
 
+        debug!("listening on: {}", addr);
+
         Ok((NoiseListener { listener, keypair: self.keypair, params: self.params }, addr))
     }
 
-    fn dial(self, addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
+    fn dial(self, mut addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
         let pubkey =
-            if let Some(Protocol::Curve25519(key)) = addr.iter().last() {
-                MontgomeryPoint(key.into_owned())
-            } else {
-                return Err(TransportError::MultiaddrNotSupported(addr))
+            match addr.pop() {
+                Some(Protocol::Curve25519(key)) => MontgomeryPoint(key.into_owned()),
+                Some(proto) => {
+                    addr.append(proto);
+                    return Err(TransportError::MultiaddrNotSupported(addr))
+                }
+                None => return Err(TransportError::MultiaddrNotSupported(addr))
             };
+
+        debug!("dialing {}", addr);
 
         let dial = self.transport.dial(addr)
             .map_err(|e| match e {
                 TransportError::MultiaddrNotSupported(a) => TransportError::MultiaddrNotSupported(a),
                 TransportError::Other(e) => TransportError::Other(NoiseError::Inner(e))
             })?;
+
+        debug!("creating session with {}", PublicKey(pubkey.clone()).base58_encoded());
 
         let session = snow::Builder::new(self.params.clone())
             .local_private_key(self.keypair.secret())
@@ -141,6 +166,7 @@ where
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         if let Some((future, addr)) = try_ready!(self.listener.poll().map_err(NoiseError::Inner)) {
+            trace!("incoming stream: creating new session");
             let session = snow::Builder::new(self.params.clone())
                 .local_private_key(self.keypair.secret())
                 .build_responder()?;
@@ -373,6 +399,7 @@ impl<T: io::Read> io::Read for NoiseOutput<T> {
                         if let Ok(n) = self.session.read_message(&self.buf_enc[..len], &mut self.buf_dec[..]) {
                             self.state = State::CopyData { len: n, off: 0 }
                         } else {
+                            debug!("decryption error");
                             self.state = State::DecErr;
                             return Err(io::ErrorKind::InvalidData.into())
                         }
@@ -414,6 +441,7 @@ impl<T: io::Write> io::Write for NoiseOutput<T> {
                         if let Ok(n) = self.session.write_message(&self.buf_dec[..*len], &mut self.buf_enc[..]) {
                             self.state = State::WriteLen { len: n }
                         } else {
+                            debug!("encryption error");
                             self.state = State::EncErr;
                             return Err(io::ErrorKind::InvalidData.into())
                         }
