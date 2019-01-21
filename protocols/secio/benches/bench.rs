@@ -20,11 +20,8 @@
 
 use criterion::{Bencher, Criterion, criterion_main, criterion_group};
 use futures::prelude::*;
-use libp2p_core::Transport;
-use tokio::{
-    io,
-    runtime::current_thread::Runtime
-};
+use libp2p_core::{multiaddr::Protocol, Transport};
+use tokio::{io, runtime::current_thread::Runtime};
 
 fn secio_and_send_data(bench: &mut Bencher, data: &[u8]) {
     let key = libp2p_secio::SecioKeyPair::ed25519_generated().unwrap();
@@ -103,21 +100,70 @@ fn raw_tcp_connect_and_send_data(bench: &mut Bencher, data: &[u8]) {
     })
 }
 
+fn noise_connect_and_send_data(bench: &mut Bencher, data: &[u8]) {
+    let server_keypair = libp2p_noise::Keypair::fresh();
+    let server_static = server_keypair.public().clone();
+    let client_keypair = libp2p_noise::Keypair::fresh();
+
+    let server_trans = libp2p_noise::NoiseConfig::new(libp2p_tcp::TcpConfig::new(), server_keypair);
+    let client_trans = libp2p_noise::NoiseConfig::new(libp2p_tcp::TcpConfig::new(), client_keypair);
+
+    let data_vec = data.to_vec();
+
+    bench.iter(move || {
+        let (listener, mut addr) = server_trans
+            .clone()
+            .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
+            .unwrap();
+
+        let listener_side = listener
+            .into_future()
+            .map_err(|(err, _)| err)
+            .and_then(|(client, _)| client.unwrap().0)
+            .map_err(|_| panic!())
+            .and_then(|(_, client)| io::read_to_end(client, Vec::new()))
+            .and_then(|msg| {
+                assert_eq!(msg.1, data);
+                Ok(())
+            });
+
+        addr.append(Protocol::Curve25519(std::borrow::Cow::Owned(server_static.0)));
+
+        let dialer_side = client_trans
+            .clone()
+            .dial(addr)
+            .unwrap()
+            .map_err(|_| panic!())
+            .and_then(|(_, server)| io::write_all(server, data_vec.clone()))
+            .map(|_| ());
+
+        let combined = listener_side.select(dialer_side)
+            .map_err(|(err, _)| panic!("{:?}", err))
+            .map(|_| ());
+        let mut rt = Runtime::new().unwrap();
+        rt.block_on(combined).unwrap();
+    })
+}
+
 fn criterion_benchmarks(bench: &mut Criterion) {
     bench.bench_function("secio_connect_and_send_hello", move |b| secio_and_send_data(b, b"hello world"));
     bench.bench_function("raw_tcp_connect_and_send_hello", move |b| raw_tcp_connect_and_send_data(b, b"hello world"));
+    bench.bench_function("noise_connect_and_send_hello", move |b| noise_connect_and_send_data(b, b"hello world"));
 
     let data = (0 .. 1024).map(|_| rand::random::<u8>()).collect::<Vec<_>>();
     bench.bench_function("secio_connect_and_send_one_kb", { let data = data.clone(); move |b| secio_and_send_data(b, &data) });
-    bench.bench_function("raw_tcp_connect_and_send_one_kb", move |b| raw_tcp_connect_and_send_data(b, &data));
+    bench.bench_function("raw_tcp_connect_and_send_one_kb", { let data = data.clone(); move |b| raw_tcp_connect_and_send_data(b, &data) });
+    bench.bench_function("noise_connect_and_send_one_kb", move |b| noise_connect_and_send_data(b, &data));
 
     let data = (0 .. 1024 * 1024).map(|_| rand::random::<u8>()).collect::<Vec<_>>();
     bench.bench_function("secio_connect_and_send_one_mb", { let data = data.clone(); move |b| secio_and_send_data(b, &data) });
-    bench.bench_function("raw_tcp_connect_and_send_one_mb", move |b| raw_tcp_connect_and_send_data(b, &data));
+    bench.bench_function("raw_tcp_connect_and_send_one_mb", { let data = data.clone(); move |b| raw_tcp_connect_and_send_data(b, &data) });
+    bench.bench_function("noise_connect_and_send_one_mb", move |b| noise_connect_and_send_data(b, &data));
 
     let data = (0 .. 2 * 1024 * 1024).map(|_| rand::random::<u8>()).collect::<Vec<_>>();
     bench.bench_function("secio_connect_and_send_two_mb", { let data = data.clone(); move |b| secio_and_send_data(b, &data) });
-    bench.bench_function("raw_tcp_connect_and_send_two_mb", move |b| raw_tcp_connect_and_send_data(b, &data));
+    bench.bench_function("raw_tcp_connect_and_send_two_mb", { let data = data.clone(); move |b| raw_tcp_connect_and_send_data(b, &data) });
+    bench.bench_function("noise_connect_and_send_two_mb", move |b| noise_connect_and_send_data(b, &data));
 }
 
 criterion_group!(benches, criterion_benchmarks);

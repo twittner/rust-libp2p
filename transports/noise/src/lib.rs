@@ -36,7 +36,7 @@ use x25519_dalek::{x25519, X25519_BASEPOINT_BYTES};
 const PATTERN: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 
 #[derive(Clone, Debug)]
-pub struct PublicKey([u8; 32]);
+pub struct PublicKey(pub [u8; 32]);
 
 impl PublicKey {
     pub fn base58_encoded(&self) -> String {
