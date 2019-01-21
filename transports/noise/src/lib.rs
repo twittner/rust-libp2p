@@ -24,50 +24,48 @@ mod io;
 pub use error::NoiseError;
 pub use io::NoiseOutput;
 
-use curve25519_dalek::{
-    constants::X25519_BASEPOINT,
-    montgomery::MontgomeryPoint,
-    scalar::Scalar
-};
 use futures::{prelude::*, try_ready};
 use libp2p_core::{multiaddr::{Multiaddr, Protocol}, PeerId, Transport, TransportError};
 use log::{debug, trace};
+use rand::Rng;
 use snow;
 use std::{mem, sync::Arc};
 use tokio_io::{AsyncRead, AsyncWrite};
+use x25519_dalek::{x25519, X25519_BASEPOINT_BYTES};
 
 const PATTERN: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 
 #[derive(Clone, Debug)]
-pub struct PublicKey(MontgomeryPoint);
+pub struct PublicKey([u8; 32]);
 
 impl PublicKey {
     pub fn base58_encoded(&self) -> String {
-        bs58::encode(self.0.as_bytes()).into_string()
+        bs58::encode(self.0).into_string()
     }
 }
 
 impl AsRef<[u8]> for PublicKey {
     fn as_ref(&self) -> &[u8] {
-        self.0.as_bytes()
+        &self.0
     }
 }
 
 /// Curve25519 keypair.
 pub struct Keypair {
-    secret: Scalar,
+    secret: [u8; 32],
     public: PublicKey
 }
 
 impl Keypair {
     pub fn fresh() -> Self {
-        let s = Scalar::random(&mut rand::thread_rng());
-        let p = s * X25519_BASEPOINT;
-        Keypair { secret: s, public: PublicKey(p) }
+        let mut secret = [0; 32];
+        rand::thread_rng().fill(&mut secret);
+        let public = x25519(secret, X25519_BASEPOINT_BYTES);
+        Keypair { secret, public: PublicKey(public) }
     }
 
     pub fn secret(&self) -> &[u8; 32] {
-        self.secret.as_bytes()
+        &self.secret
     }
 
     pub fn public(&self) -> &PublicKey {
@@ -119,7 +117,7 @@ where
     fn dial(self, mut addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
         let pubkey =
             match addr.pop() {
-                Some(Protocol::Curve25519(key)) => MontgomeryPoint(key.into_owned()),
+                Some(Protocol::Curve25519(key)) => key.into_owned(),
                 Some(proto) => {
                     addr.append(proto);
                     return Err(TransportError::MultiaddrNotSupported(addr))
@@ -139,7 +137,7 @@ where
 
         let session = snow::Builder::new(self.params.clone())
             .local_private_key(self.keypair.secret())
-            .remote_public_key(pubkey.as_bytes())
+            .remote_public_key(&pubkey)
             .build_initiator()
             .map_err(|e| TransportError::Other(NoiseError::Noise(e)))?;
 
@@ -205,25 +203,25 @@ where
                         let output = NoiseOutput::new(io, session);
                         self.0 = ListenState::RecvHandshake(output)
                     } else {
-                        mem::replace(&mut self.0, ListenState::Init(future, session));
+                        self.0 = ListenState::Init(future, session);
                         return Ok(Async::NotReady)
                     }
                 }
                 ListenState::RecvHandshake(mut io) => {
-                    // -> e, es, s, ss
+                    // <- e, es, s, ss
                     if io.poll_read(&mut []).map_err(NoiseError::Io)?.is_ready() {
                         self.0 = ListenState::SendHandshake(io)
                     } else {
-                        mem::replace(&mut self.0, ListenState::RecvHandshake(io));
+                        self.0 = ListenState::RecvHandshake(io);
                         return Ok(Async::NotReady)
                     }
                 }
                 ListenState::SendHandshake(mut io) => {
-                    // <- e, ee, se
+                    // -> e, ee, se
                     if io.poll_write(&[]).map_err(NoiseError::Io)?.is_ready() {
                         self.0 = ListenState::Flush(io)
                     } else {
-                        mem::replace(&mut self.0, ListenState::SendHandshake(io));
+                        self.0 = ListenState::SendHandshake(io);
                         return Ok(Async::NotReady)
                     }
                 }
@@ -232,12 +230,12 @@ where
                         let s = io.session.into_transport_mode()?;
                         let m = s.get_remote_static()
                             .ok_or(NoiseError::InvalidKey)
-                            .and_then(montgomery)?;
+                            .and_then(to_array)?;
                         let io = NoiseOutput { session: s, .. io };
                         self.0 = ListenState::Done;
-                        return Ok(Async::Ready((PeerId::encode(m.as_bytes()), io)))
+                        return Ok(Async::Ready((PeerId::encode(&m), io)))
                     } else {
-                        mem::replace(&mut self.0, ListenState::Flush(io));
+                        self.0 = ListenState::Flush(io);
                         return Ok(Async::NotReady)
                     }
                 }
@@ -273,7 +271,7 @@ where
                         let output = NoiseOutput::new(io, session);
                         self.0 = DialState::SendHandshake(output)
                     } else {
-                        mem::replace(&mut self.0, DialState::Init(future, session));
+                        self.0 = DialState::Init(future, session);
                         return Ok(Async::NotReady)
                     }
                 }
@@ -282,7 +280,7 @@ where
                     if io.poll_write(&[]).map_err(NoiseError::Io)?.is_ready() {
                         self.0 = DialState::Flush(io)
                     } else {
-                        mem::replace(&mut self.0, DialState::SendHandshake(io));
+                        self.0 = DialState::SendHandshake(io);
                         return Ok(Async::NotReady)
                     }
                 }
@@ -290,7 +288,7 @@ where
                     if io.poll_flush().map_err(NoiseError::Io)?.is_ready() {
                         self.0 = DialState::RecvHandshake(io)
                     } else {
-                        mem::replace(&mut self.0, DialState::Flush(io));
+                        self.0 = DialState::Flush(io);
                         return Ok(Async::NotReady)
                     }
                 }
@@ -300,12 +298,12 @@ where
                         let s = io.session.into_transport_mode()?;
                         let m = s.get_remote_static()
                             .ok_or(NoiseError::InvalidKey)
-                            .and_then(montgomery)?;
+                            .and_then(to_array)?;
                         let io = NoiseOutput { session: s, .. io };
                         self.0 = DialState::Done;
-                        return Ok(Async::Ready((PeerId::encode(m.as_bytes()), io)))
+                        return Ok(Async::Ready((PeerId::encode(&m), io)))
                     } else {
-                        mem::replace(&mut self.0, DialState::RecvHandshake(io));
+                        self.0 = DialState::RecvHandshake(io);
                         return Ok(Async::NotReady)
                     }
                 }
@@ -315,12 +313,12 @@ where
     }
 }
 
-fn montgomery<E>(bytes: &[u8]) -> Result<MontgomeryPoint, NoiseError<E>> {
+fn to_array<E>(bytes: &[u8]) -> Result<[u8; 32], NoiseError<E>> {
     if bytes.len() != 32 {
         return Err(NoiseError::InvalidKey)
     }
-    let mut m = MontgomeryPoint([0; 32]);
-    (&mut m.0).copy_from_slice(bytes);
+    let mut m = [0; 32];
+    m.copy_from_slice(bytes);
     Ok(m)
 }
 

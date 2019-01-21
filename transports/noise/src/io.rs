@@ -103,6 +103,7 @@ impl<T: io::Read> io::Read for NoiseOutput<T> {
                     let n = self.io.read_u16::<BigEndian>()?;
                     trace!("read: next frame len = {}", n);
                     if n == 0 {
+                        trace!("read: eof");
                         self.read_state = ReadState::Eof;
                         return Ok(0)
                     }
@@ -131,7 +132,7 @@ impl<T: io::Read> io::Read for NoiseOutput<T> {
                 }
                 ReadState::CopyData { len, ref mut off } => {
                     let n = std::cmp::min(len - *off, buf.len());
-                    (&mut buf[.. n]).copy_from_slice(&self.read_crypto_buf[*off .. *off + n]);
+                    buf[.. n].copy_from_slice(&self.read_crypto_buf[*off .. *off + n]);
                     trace!("read: copied {}/{} bytes", *off + n, len);
                     *off += n;
                     if len == *off {
@@ -159,7 +160,7 @@ impl<T: io::Write> io::Write for NoiseOutput<T> {
                 }
                 WriteState::BufferData { ref mut off } => {
                     let n = std::cmp::min(MAX_WRITE_BUF_LEN - *off, buf.len());
-                    (&mut self.write_buf[*off .. *off + n]).copy_from_slice(&buf[.. n]);
+                    self.write_buf[*off .. *off + n].copy_from_slice(&buf[.. n]);
                     trace!("write: buffered {} bytes", *off + n);
                     *off += n;
                     if *off == MAX_WRITE_BUF_LEN {
