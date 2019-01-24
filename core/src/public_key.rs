@@ -34,6 +34,7 @@ pub enum PublicKey {
     /// Format = ???
     // TODO: ^
     Secp256k1(Vec<u8>),
+    Curve25519(Vec<u8>)
 }
 
 impl PublicKey {
@@ -56,6 +57,10 @@ impl PublicKey {
                 public_key.set_Type(keys_proto::KeyType::Secp256k1);
                 public_key.set_Data(data);
             },
+            PublicKey::Curve25519(data) => {
+                public_key.set_Type(keys_proto::KeyType::Curve25519);
+                public_key.set_Data(data)
+            }
         };
 
         public_key
@@ -84,6 +89,13 @@ impl PublicKey {
             keys_proto::KeyType::Secp256k1 => {
                 PublicKey::Secp256k1(pubkey.take_Data())
             },
+            keys_proto::KeyType::Curve25519 => {
+                let data = pubkey.take_Data();
+                if data.len() != 32 {
+                    return Err(std::io::ErrorKind::InvalidData.into())
+                }
+                PublicKey::Curve25519(data)
+            }
         })
     }
 

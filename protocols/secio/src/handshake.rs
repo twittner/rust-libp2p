@@ -510,6 +510,10 @@ where
                     debug!("support for secp256k1 was disabled at compile-time");
                     return Err(SecioError::SignatureVerificationFailed);
                 }
+                PublicKey::Curve25519(_) => {
+                    debug!("received Curve25519 key");
+                    return Err(SecioError::InvalidProposition("Rceived Curve25519 key."))
+                }
             };
 
             trace!("successfully verified the remote's signature");
