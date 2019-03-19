@@ -13,5 +13,7 @@ categories = ["network-programming", "asynchronous"]
 futures = "0.1"
 libp2p-core = { version = "0.7.0", path = "../../core" }
 log = "0.4"
+parking_lot = "0.7"
+tokio-executor = "0.1"
 tokio-io = "0.1"
-yamux = "0.2.0"
+yamux = { git = "https://github.com/twittner/yamux", branch = "v2" }
