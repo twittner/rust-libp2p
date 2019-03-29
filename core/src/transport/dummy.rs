@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::transport::{Transport, TransportError};
+use crate::transport::{Transport, TransportError, ListenerEvent};
 use crate::{Multiaddr, MultiaddrSeq};
 use std::{fmt, io, marker::PhantomData};
 
@@ -55,7 +55,7 @@ impl<TOut> Clone for DummyTransport<TOut> {
 impl<TOut> Transport for DummyTransport<TOut> {
     type Output = TOut;
     type Error = io::Error;
-    type Listener = futures::stream::Empty<(Self::ListenerUpgrade, Multiaddr), io::Error>;
+    type Listener = futures::stream::Empty<ListenerEvent<Self::ListenerUpgrade>, io::Error>;
     type ListenerUpgrade = futures::future::Empty<Self::Output, io::Error>;
     type Dial = futures::future::Empty<Self::Output, io::Error>;
 

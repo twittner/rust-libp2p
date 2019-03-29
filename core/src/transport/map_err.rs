@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{MultiaddrSeq, transport::{Transport, TransportError}};
+use crate::{MultiaddrSeq, transport::{Transport, TransportError, ListenerEvent}};
 use futures::prelude::*;
 use multiaddr::Multiaddr;
 use std::error;
@@ -85,18 +85,27 @@ where T: Transport {
 }
 
 impl<T, F, TErr> Stream for MapErrListener<T, F>
-where T: Transport,
+where
+    T: Transport,
     F: FnOnce(T::Error) -> TErr + Clone,
     TErr: error::Error,
 {
-    type Item = (MapErrListenerUpgrade<T, F>, Multiaddr);
+    type Item = ListenerEvent<MapErrListenerUpgrade<T, F>>;
     type Error = TErr;
 
     #[inline]
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match self.inner.poll() {
-            Ok(Async::Ready(Some((value, addr)))) => Ok(Async::Ready(
-                Some((MapErrListenerUpgrade { inner: value, map: Some(self.map.clone()) }, addr)))),
+            Ok(Async::Ready(Some(event))) => {
+                let event = event.map_upgrade(move |value, addr| {
+                    let upgrade = MapErrListenerUpgrade {
+                        inner: value,
+                        map: Some(self.map.clone())
+                    };
+                    (upgrade, addr)
+                });
+                Ok(Async::Ready(Some(event)))
+            }
             Ok(Async::Ready(None)) => Ok(Async::Ready(None)),
             Ok(Async::NotReady) => Ok(Async::NotReady),
             Err(err) => Err((self.map.clone())(err)),

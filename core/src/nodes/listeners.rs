@@ -20,8 +20,9 @@
 
 //! Manage listening on multiple multiaddresses at once.
 
-use crate::{Multiaddr, MultiaddrSeq, Transport, transport::TransportError};
+use crate::{Multiaddr, MultiaddrSeq, Transport, transport::{TransportError, ListenerEvent}};
 use futures::prelude::*;
+use log::warn;
 use std::{collections::VecDeque, fmt};
 use void::Void;
 
@@ -186,7 +187,7 @@ where
                     remaining -= 1;
                     if remaining == 0 { break }
                 }
-                Ok(Async::Ready(Some((upgrade, send_back_addr)))) => {
+                Ok(Async::Ready(Some(ListenerEvent::Upgrade(upgrade, send_back_addr)))) => {
                     let listen_addrs = listener.addresses.clone();
                     self.listeners.push_front(listener);
                     return Async::Ready(ListenersEvent::Incoming {
@@ -194,6 +195,14 @@ where
                         listen_addrs,
                         send_back_addr,
                     });
+                }
+                Ok(Async::Ready(Some(ListenerEvent::AddAddress(a)))) => {
+                    listener.addresses.push(a)
+                }
+                Ok(Async::Ready(Some(ListenerEvent::RemoveAddress(a)))) => {
+                    if listener.addresses.remove(&a).is_err() {
+                        warn!("attempting to remove the only address of this listener: {}", a)
+                    }
                 }
                 Ok(Async::Ready(None)) => {
                     return Async::Ready(ListenersEvent::Closed {
@@ -265,7 +274,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport;
+    use crate::transport::{self, ListenerEvent};
     use assert_matches::assert_matches;
     use tokio::runtime::current_thread::Runtime;
     use std::{io, iter::FromIterator};
@@ -291,7 +300,9 @@ mod tests {
                         Async::Ready(Some(tup)) => {
                             let addr = l.addresses.clone();
                             let stream = stream::poll_fn(move || Ok( Async::Ready(Some(tup.clone())) ))
-                                .map(move |stream| (future::ok(stream), addr.head().clone()));
+                                .map(move |stream| {
+                                    ListenerEvent::Upgrade(future::ok(stream), addr.head().clone())
+                                });
                             Box::new(stream)
                         }
                         Async::Ready(None) => {

@@ -18,8 +18,12 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{MultiaddrSeq, either::EitherError};
-use crate::{nodes::raw_swarm::ConnectedPoint, transport::Transport, transport::TransportError};
+use crate::{
+    MultiaddrSeq,
+    either::EitherError,
+    nodes::raw_swarm::ConnectedPoint,
+    transport::{Transport, TransportError, ListenerEvent}
+};
 use futures::{future::Either, prelude::*, try_ready};
 use multiaddr::Multiaddr;
 use std::error;
@@ -98,27 +102,30 @@ pub struct AndThenStream<TListener, TMap> {
 
 impl<TListener, TMap, TTransOut, TMapOut, TListUpgr, TTransErr> Stream for AndThenStream<TListener, TMap>
 where
-    TListener: Stream<Item = (TListUpgr, Multiaddr), Error = TTransErr>,
+    TListener: Stream<Item = ListenerEvent<TListUpgr>, Error = TTransErr>,
     TListUpgr: Future<Item = TTransOut, Error = TTransErr>,
     TMap: FnOnce(TTransOut, ConnectedPoint) -> TMapOut + Clone,
     TMapOut: IntoFuture
 {
-    type Item = (AndThenFuture<TListUpgr, TMap, TMapOut::Future>, Multiaddr);
+    type Item = ListenerEvent<AndThenFuture<TListUpgr, TMap, TMapOut::Future>>;
     type Error = EitherError<TTransErr, TMapOut::Error>;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match self.stream.poll().map_err(EitherError::A)? {
-            Async::Ready(Some((future, addr))) => {
-                let f = self.fun.clone();
-                let p = ConnectedPoint::Listener {
-                    listen_addrs: self.listen_addrs.clone(),
-                    send_back_addr: addr.clone()
-                };
-                let future = AndThenFuture {
-                    inner: Either::A(future),
-                    args: Some((f, p))
-                };
-                Ok(Async::Ready(Some((future, addr))))
+            Async::Ready(Some(event)) => {
+                let event = event.map_upgrade(move |future, addr| {
+                    let f = self.fun.clone();
+                    let p = ConnectedPoint::Listener {
+                        listen_addrs: self.listen_addrs.clone(),
+                        send_back_addr: addr.clone()
+                    };
+                    let future = AndThenFuture {
+                        inner: Either::A(future),
+                        args: Some((f, p))
+                    };
+                    (future, addr)
+                });
+                Ok(Async::Ready(Some(event)))
             }
             Async::Ready(None) => Ok(Async::Ready(None)),
             Async::NotReady => Ok(Async::NotReady)

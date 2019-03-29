@@ -39,7 +39,7 @@
 //! documentation of `swarm` and of libp2p in general to learn how to use the `Transport` trait.
 
 use futures::{future, future::FutureResult, prelude::*, Async, Poll};
-use libp2p_core::{MultiaddrSeq, Transport, transport::TransportError};
+use libp2p_core::{MultiaddrSeq, Transport, transport::{ListenerEvent, TransportError}};
 use log::{debug, error};
 use multiaddr::{Protocol, Multiaddr, ToMultiaddr};
 use std::fmt;
@@ -281,15 +281,10 @@ pub struct TcpListenStream {
 }
 
 impl Stream for TcpListenStream {
-    type Item = (FutureResult<TcpTransStream, io::Error>, Multiaddr);
+    type Item = ListenerEvent<FutureResult<TcpTransStream, io::Error>>;
     type Error = io::Error;
 
-    fn poll(
-        &mut self,
-    ) -> Poll<
-        Option<(FutureResult<TcpTransStream, io::Error>, Multiaddr)>,
-        io::Error,
-    > {
+    fn poll(&mut self) -> Poll<Option<Self::Item>, io::Error> {
         let inner = match self.inner {
             Ok(ref mut inc) => inc,
             Err(ref mut err) => {
@@ -316,12 +311,15 @@ impl Stream for TcpListenStream {
 
                     match apply_config(&self.config, &sock) {
                         Ok(()) => (),
-                        Err(err) => return Ok(Async::Ready(Some((future::err(err), addr)))),
+                        Err(err) => {
+                            let evt = ListenerEvent::Upgrade(future::err(err), addr);
+                            return Ok(Async::Ready(Some(evt)))
+                        }
                     };
 
                     debug!("Incoming connection from {}", addr);
                     let ret = future::ok(TcpTransStream { inner: sock });
-                    break Ok(Async::Ready(Some((ret, addr))))
+                    break Ok(Async::Ready(Some(ListenerEvent::Upgrade(ret, addr))))
                 }
                 Ok(Async::Ready(None)) => break Ok(Async::Ready(None)),
                 Ok(Async::NotReady) => break Ok(Async::NotReady),
@@ -395,7 +393,7 @@ mod tests {
     use multiaddr::Multiaddr;
     use std;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use libp2p_core::Transport;
+    use libp2p_core::{Transport, transport::ListenerEvent};
     use tokio_io;
 
     #[test]
@@ -456,20 +454,22 @@ mod tests {
             let tcp = TcpConfig::new();
             let mut rt = Runtime::new().unwrap();
             let handle = rt.handle();
-            let listener = tcp.listen_on(addr).unwrap().0.for_each(|(sock, _)| {
-                sock.and_then(|sock| {
-                    // Define what to do with the socket that just connected to us
-                    // Which in this case is read 3 bytes
-                    let handle_conn = tokio_io::io::read_exact(sock, [0; 3])
-                        .map(|(_, buf)| assert_eq!(buf, [1, 2, 3]))
-                        .map_err(|err| panic!("IO error {:?}", err));
+            let listener = tcp.listen_on(addr).unwrap().0
+                .filter_map(ListenerEvent::into_upgrade)
+                .for_each(|(sock, _)| {
+                    sock.and_then(|sock| {
+                        // Define what to do with the socket that just connected to us
+                        // Which in this case is read 3 bytes
+                        let handle_conn = tokio_io::io::read_exact(sock, [0; 3])
+                            .map(|(_, buf)| assert_eq!(buf, [1, 2, 3]))
+                            .map_err(|err| panic!("IO error {:?}", err));
 
-                    // Spawn the future as a concurrent task
-                    handle.spawn(handle_conn).unwrap();
+                        // Spawn the future as a concurrent task
+                        handle.spawn(handle_conn).unwrap();
 
-                    Ok(())
-                })
-            });
+                        Ok(())
+                    })
+                });
 
             rt.block_on(listener).unwrap();
             rt.run().unwrap();

@@ -51,7 +51,7 @@ use futures::stream::Stream;
 use log::debug;
 use multiaddr::{Protocol, Multiaddr};
 use std::{io, path::PathBuf};
-use libp2p_core::{MultiaddrSeq, Transport, transport::TransportError};
+use libp2p_core::{MultiaddrSeq, Transport, transport::{ListenerEvent, TransportError}};
 use tokio_uds::{UnixListener, UnixStream};
 
 /// Represents the configuration for a Unix domain sockets transport capability for libp2p.
@@ -150,14 +150,14 @@ impl<T> Stream for ListenerStream<T>
 where
     T: Stream
 {
-    type Item = (FutureResult<T::Item, T::Error>, Multiaddr);
+    type Item = ListenerEvent<FutureResult<T::Item, T::Error>>;
     type Error = T::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match try_ready!(self.stream.poll()) {
             Some(item) => {
                 debug!("incoming connection on {}", self.addr);
-                Ok(Async::Ready(Some((future::ok(item), self.addr.clone()))))
+                Ok(Async::Ready(Some(ListenerEvent::Upgrade(future::ok(item), self.addr.clone()))))
             }
             None => Ok(Async::Ready(None))
         }
@@ -168,11 +168,10 @@ where
 mod tests {
     use tokio::runtime::current_thread::Runtime;
     use super::{multiaddr_to_path, UdsConfig};
-    use futures::stream::Stream;
-    use futures::Future;
+    use futures::prelude::*;
     use multiaddr::{Protocol, Multiaddr};
     use std::{self, borrow::Cow, path::Path};
-    use libp2p_core::Transport;
+    use libp2p_core::{Transport, transport::ListenerEvent};
     use tempfile;
     use tokio_io;
 
@@ -206,19 +205,21 @@ mod tests {
 
             let mut rt = Runtime::new().unwrap();
             let handle = rt.handle();
-            let listener = tcp.listen_on(addr2).unwrap().0.for_each(|(sock, _)| {
-                sock.and_then(|sock| {
-                    // Define what to do with the socket that just connected to us
-                    // Which in this case is read 3 bytes
-                    let handle_conn = tokio_io::io::read_exact(sock, [0; 3])
-                        .map(|(_, buf)| assert_eq!(buf, [1, 2, 3]))
-                        .map_err(|err| panic!("IO error {:?}", err));
+            let listener = tcp.listen_on(addr2).unwrap().0
+                .filter_map(ListenerEvent::into_upgrade)
+                .for_each(|(sock, _)| {
+                    sock.and_then(|sock| {
+                        // Define what to do with the socket that just connected to us
+                        // Which in this case is read 3 bytes
+                        let handle_conn = tokio_io::io::read_exact(sock, [0; 3])
+                            .map(|(_, buf)| assert_eq!(buf, [1, 2, 3]))
+                            .map_err(|err| panic!("IO error {:?}", err));
 
-                    // Spawn the future as a concurrent task
-                    handle.spawn(handle_conn).unwrap();
-                    Ok(())
-                })
-            });
+                        // Spawn the future as a concurrent task
+                        handle.spawn(handle_conn).unwrap();
+                        Ok(())
+                    })
+                });
 
             rt.block_on(listener).unwrap();
             rt.run().unwrap();

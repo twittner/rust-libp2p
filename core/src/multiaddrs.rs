@@ -84,6 +84,25 @@ impl MultiaddrSeq {
         self.head = a
     }
 
+    /// Removes all [`Multiaddr`]s equal to the argument,
+    /// unless it is the sole element of this sequence.
+    ///
+    /// `Err(())` is returned if the sequence contains only one element
+    /// which equals `a`, otherwise `Ok(())` is returned.
+    pub fn remove(&mut self, a: &Multiaddr) -> Result<(), ()> {
+        if self.head == *a {
+            if let Some(x) = self.pop() {
+                self.replace_head(x);
+                Ok(())
+            } else {
+                Err(())
+            }
+        } else {
+            self.tail.retain(|x| x != a);
+            Ok(())
+        }
+    }
+
     /// Create an [`Iterator`] over all [`Multiaddr`] of this sequence.
     pub fn iter(&self) -> MultiAddrIter {
         MultiAddrIter {

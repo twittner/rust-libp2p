@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{Multiaddr, MultiaddrSeq, core::Transport, core::transport::TransportError};
+use crate::{Multiaddr, MultiaddrSeq, core::{Transport, transport::{ListenerEvent, TransportError}}};
 use futures::{prelude::*, try_ready};
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
@@ -95,23 +95,27 @@ pub struct BandwidthListener<TInner> {
 }
 
 impl<TInner, TConn> Stream for BandwidthListener<TInner>
-where TInner: Stream<Item = (TConn, Multiaddr)>,
+where
+    TInner: Stream<Item = ListenerEvent<TConn>>,
 {
-    type Item = (BandwidthFuture<TConn>, Multiaddr);
+    type Item = ListenerEvent<BandwidthFuture<TConn>>;
     type Error = TInner::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        let (inner, addr) = match try_ready!(self.inner.poll()) {
+        let event = match try_ready!(self.inner.poll()) {
             Some(v) => v,
             None => return Ok(Async::Ready(None))
         };
 
-        let fut = BandwidthFuture {
-            inner,
-            sinks: self.sinks.clone(),
-        };
+        let event = event.map_upgrade(|inner, addr| {
+            let fut = BandwidthFuture {
+                inner,
+                sinks: self.sinks.clone(),
+            };
+            (fut, addr)
+        });
 
-        Ok(Async::Ready(Some((fut, addr))))
+        Ok(Async::Ready(Some(event)))
     }
 }
 

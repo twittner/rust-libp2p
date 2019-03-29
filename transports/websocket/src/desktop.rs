@@ -19,7 +19,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use futures::{Future, IntoFuture, Sink, Stream};
-use libp2p_core::{MultiaddrSeq, Transport, transport::TransportError};
+use libp2p_core::{MultiaddrSeq, Transport, transport::{ListenerEvent, TransportError}};
 use log::{debug, trace};
 use multiaddr::{Protocol, Multiaddr};
 use rw_stream_sink::RwStreamSink;
@@ -70,7 +70,7 @@ where
 {
     type Output = Box<dyn AsyncStream + Send>;
     type Error = WsError<T::Error>;
-    type Listener = Box<dyn Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = Self::Error> + Send>;
+    type Listener = Box<dyn Stream<Item = ListenerEvent<Self::ListenerUpgrade>, Error = Self::Error> + Send>;
     type ListenerUpgrade = Box<dyn Future<Item = Self::Output, Error = Self::Error> + Send>;
     type Dial = Box<dyn Future<Item = Self::Output, Error = Self::Error> + Send>;
 
@@ -91,7 +91,7 @@ where
         }
         debug!("Listening on {}", new_addr);
 
-        let listen = inner_listen.map_err(WsError::Underlying).map(|(stream, mut client_addr)| {
+        let listen = inner_listen.map_err(WsError::Underlying).map(|event| event.map_upgrade(|stream, mut client_addr| {
             // Need to suffix `/ws` to each client address.
             client_addr.append(Protocol::Ws);
 
@@ -139,7 +139,7 @@ where
             });
 
             (Box::new(upgraded) as Box<dyn Future<Item = _, Error = _> + Send>, client_addr)
-        });
+        }));
 
         Ok((Box::new(listen) as Box<_>, new_addr))
     }
@@ -273,7 +273,7 @@ mod tests {
     use tokio::runtime::current_thread::Runtime;
     use futures::{Future, Stream};
     use multiaddr::{Multiaddr, Protocol};
-    use libp2p_core::Transport;
+    use libp2p_core::{Transport, transport::ListenerEvent};
     use super::WsConfig;
 
     #[test]
@@ -287,6 +287,7 @@ mod tests {
         assert_eq!(Some(Protocol::Ws), addr.head().iter().nth(2));
         assert_ne!(Some(Protocol::Tcp(0)), addr.head().iter().nth(1));
         let listener = listener
+            .filter_map(ListenerEvent::into_upgrade)
             .into_future()
             .map_err(|(e, _)| e)
             .and_then(|(c, _)| c.unwrap().0);
@@ -311,6 +312,7 @@ mod tests {
         assert_eq!(Some(Protocol::Ws), addr.head().iter().nth(2));
         assert_ne!(Some(Protocol::Tcp(0)), addr.head().iter().nth(1));
         let listener = listener
+            .filter_map(ListenerEvent::into_upgrade)
             .into_future()
             .map_err(|(e, _)| e)
             .and_then(|(c, _)| c.unwrap().0);

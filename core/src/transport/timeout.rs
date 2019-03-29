@@ -24,7 +24,7 @@
 //! underlying `Transport`.
 // TODO: add example
 
-use crate::{Multiaddr, MultiaddrSeq, Transport, transport::TransportError};
+use crate::{Multiaddr, MultiaddrSeq, Transport, transport::{TransportError, ListenerEvent}};
 use futures::{try_ready, Async, Future, Poll, Stream};
 use log::debug;
 use std::{error, fmt, time::Duration};
@@ -121,18 +121,21 @@ pub struct TimeoutListener<InnerStream> {
 
 impl<InnerStream, O> Stream for TimeoutListener<InnerStream>
 where
-    InnerStream: Stream<Item = (O, Multiaddr)>,
+    InnerStream: Stream<Item = ListenerEvent<O>>
 {
-    type Item = (TokioTimerMapErr<Timeout<O>>, Multiaddr);
+    type Item = ListenerEvent<TokioTimerMapErr<Timeout<O>>>;
     type Error = TransportTimeoutError<InnerStream::Error>;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         let poll_out = try_ready!(self.inner.poll().map_err(TransportTimeoutError::Other));
-        if let Some((inner_fut, addr)) = poll_out {
-            let fut = TokioTimerMapErr {
-                inner: Timeout::new(inner_fut, self.timeout),
-            };
-            Ok(Async::Ready(Some((fut, addr))))
+        if let Some(event) = poll_out {
+            let event = event.map_upgrade(move |inner_fut, addr| {
+                let fut = TokioTimerMapErr {
+                    inner: Timeout::new(inner_fut, self.timeout)
+                };
+                (fut, addr)
+            });
+            Ok(Async::Ready(Some(event)))
         } else {
             Ok(Async::Ready(None))
         }

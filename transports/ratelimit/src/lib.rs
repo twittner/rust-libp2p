@@ -21,7 +21,7 @@
 use aio_limited::{Limited, Limiter};
 use futures::prelude::*;
 use futures::try_ready;
-use libp2p_core::{Multiaddr, MultiaddrSeq, Transport, transport::TransportError};
+use libp2p_core::{Multiaddr, MultiaddrSeq, Transport, transport::{ListenerEvent, TransportError}};
 use log::error;
 use std::{error, fmt, io};
 use tokio_executor::Executor;
@@ -143,16 +143,19 @@ impl<C: AsyncRead + AsyncWrite> AsyncWrite for Connection<C> {
 pub struct Listener<T: Transport>(RateLimited<T::Listener>);
 
 impl<T: Transport> Stream for Listener<T> {
-    type Item = (ListenerUpgrade<T>, Multiaddr);
+    type Item = ListenerEvent<ListenerUpgrade<T>>;
     type Error = RateLimitedErr<T::Error>;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match try_ready!(self.0.value.poll().map_err(RateLimitedErr::Underlying)) {
-            Some((upgrade, addr)) => {
-                let r = self.0.rlimiter.clone();
-                let w = self.0.wlimiter.clone();
-                let u = ListenerUpgrade(RateLimited::from_parts(upgrade, r, w));
-                Ok(Async::Ready(Some((u, addr))))
+            Some(event) => {
+                let event = event.map_upgrade(|upgrade, addr| {
+                    let r = self.0.rlimiter.clone();
+                    let w = self.0.wlimiter.clone();
+                    let u = ListenerUpgrade(RateLimited::from_parts(upgrade, r, w));
+                    (u, addr)
+                });
+                Ok(Async::Ready(Some(event)))
             }
             None => Ok(Async::Ready(None)),
         }

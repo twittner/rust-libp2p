@@ -93,7 +93,7 @@ pub trait Transport {
     /// transport stack. The item must be a [`ListenerUpgrade`](Transport::ListenerUpgrade) future
     /// that resolves to an [`Output`](Transport::Output) value once all protocol upgrades
     /// have been applied.
-    type Listener: Stream<Item = (Self::ListenerUpgrade, Multiaddr), Error = Self::Error>;
+    type Listener: Stream<Item = ListenerEvent<Self::ListenerUpgrade>, Error = Self::Error>;
 
     /// A pending [`Output`](Transport::Output) for an inbound connection,
     /// obtained from the [`Listener`](Transport::Listener) stream.
@@ -251,6 +251,46 @@ pub trait Transport {
         Self: Sized,
     {
         timeout::TransportTimeout::with_ingoing_timeout(self, timeout)
+    }
+}
+
+/// Event produced by [`Transport::Listener`]s
+#[derive(Debug)]
+pub enum ListenerEvent<T> {
+    /// An upgrade, consisting of the upgrade future and the remote address.
+    Upgrade(T, Multiaddr),
+    /// An additional multi-address is used for listening.
+    AddAddress(Multiaddr),
+    /// A multi-address is no longer used for listening.
+    RemoveAddress(Multiaddr)
+}
+
+impl<T> ListenerEvent<T> {
+    /// In case this [`ListenerEvent`] is an upgrade, apply the given function
+    /// to the upgrade and multiaddress and produce another listener event
+    /// based the the function's result.
+    pub fn map_upgrade<F, U>(self, f: F) -> ListenerEvent<U>
+    where
+        F: FnOnce(T, Multiaddr) -> (U, Multiaddr)
+    {
+        match self {
+            ListenerEvent::Upgrade(u, a) => {
+                let (u, a) = f(u, a);
+                ListenerEvent::Upgrade(u, a)
+            }
+            ListenerEvent::AddAddress(a) => ListenerEvent::AddAddress(a),
+            ListenerEvent::RemoveAddress(a) => ListenerEvent::RemoveAddress(a)
+        }
+    }
+
+    /// Try to turn this listener event into it's upgrade parts.
+    /// Returns `None` if the event is not actually an upgrade.
+    pub fn into_upgrade(self) -> Option<(T, Multiaddr)> {
+        if let ListenerEvent::Upgrade(x, a) = self {
+            Some((x, a))
+        } else {
+            None
+        }
     }
 }
 

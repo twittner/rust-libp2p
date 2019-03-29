@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{MultiaddrSeq, Transport, transport::TransportError};
+use crate::{MultiaddrSeq, Transport, transport::{TransportError, ListenerEvent}};
 use bytes::{Bytes, IntoBuf};
 use fnv::FnvHashMap;
 use futures::{future::{self, FutureResult}, prelude::*, sync::mpsc, try_ready};
@@ -178,7 +178,7 @@ pub struct Listener {
 }
 
 impl Stream for Listener {
-    type Item = (FutureResult<Channel<Bytes>, MemoryTransportError>, Multiaddr);
+    type Item = ListenerEvent<FutureResult<Channel<Bytes>, MemoryTransportError>>;
     type Error = MemoryTransportError;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
@@ -189,7 +189,7 @@ impl Stream for Listener {
             None => return Ok(Async::Ready(None)),
         };
         let dialed_addr = Protocol::Memory(self.port.get()).into();
-        Ok(Async::Ready(Some((future::ok(channel), dialed_addr))))
+        Ok(Async::Ready(Some(ListenerEvent::Upgrade(future::ok(channel), dialed_addr))))
     }
 }
 

@@ -19,7 +19,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use futures::{future::Either, prelude::*};
-use libp2p_core::{Transport, upgrade::{apply_inbound, apply_outbound}};
+use libp2p_core::{Transport, transport::ListenerEvent, upgrade::{apply_inbound, apply_outbound}};
 use libp2p_noise::{Keypair, X25519, NoiseConfig};
 use libp2p_tcp::TcpConfig;
 use log::info;
@@ -111,6 +111,7 @@ where
         .unwrap();
 
     let server = server.take(1)
+        .filter_map(ListenerEvent::into_upgrade)
         .and_then(|client| client.0)
         .map_err(|e| panic!("server error: {}", e))
         .and_then(|(_, client)| {

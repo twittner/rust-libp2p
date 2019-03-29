@@ -271,7 +271,12 @@ mod tests {
     use tokio::runtime::current_thread::Runtime;
     use libp2p_tcp::TcpConfig;
     use futures::{Future, Stream};
-    use libp2p_core::{identity, Transport, upgrade::{apply_outbound, apply_inbound}};
+    use libp2p_core::{
+        identity,
+        Transport,
+        transport::ListenerEvent,
+        upgrade::{apply_outbound, apply_inbound}
+    };
     use std::{io, sync::mpsc, thread};
 
     #[test]
@@ -293,6 +298,7 @@ mod tests {
             tx.send(addr).unwrap();
 
             let future = listener
+                .filter_map(ListenerEvent::into_upgrade)
                 .into_future()
                 .map_err(|(err, _)| err)
                 .and_then(|(client, _)| client.unwrap().0)

@@ -34,7 +34,7 @@
 //!
 
 use futures::{future::{self, Either, FutureResult, JoinAll}, prelude::*, stream, try_ready};
-use libp2p_core::{MultiaddrSeq, Transport, transport::TransportError};
+use libp2p_core::{MultiaddrSeq, Transport, transport::{TransportError, ListenerEvent}};
 use log::{debug, trace, log_enabled, Level};
 use multiaddr::{Protocol, Multiaddr};
 use std::{error, fmt, io, marker::PhantomData, net::IpAddr};
@@ -91,7 +91,7 @@ where
     type Error = DnsErr<T::Error>;
     type Listener = stream::MapErr<
         stream::Map<T::Listener,
-            fn((T::ListenerUpgrade, Multiaddr)) -> (Self::ListenerUpgrade, Multiaddr)>,
+            fn(ListenerEvent<T::ListenerUpgrade>) -> ListenerEvent<Self::ListenerUpgrade>>,
         fn(T::Error) -> Self::Error>;
     type ListenerUpgrade = future::MapErr<T::ListenerUpgrade, fn(T::Error) -> Self::Error>;
     type Dial = Either<future::MapErr<T::Dial, fn(T::Error) -> Self::Error>,
@@ -106,7 +106,9 @@ where
         let (listener, new_addr) = self.inner.listen_on(addr)
             .map_err(|err| err.map(DnsErr::Underlying))?;
         let listener = listener
-            .map::<_, fn(_) -> _>(|(upgr, multiaddr)| (upgr.map_err::<fn(_) -> _, _>(DnsErr::Underlying), multiaddr))
+            .map::<_, fn(_) -> _>(|event| event.map_upgrade(|upgr, multiaddr| {
+                (upgr.map_err::<fn(_) -> _, _>(DnsErr::Underlying), multiaddr)
+            }))
             .map_err::<_, fn(_) -> _>(DnsErr::Underlying);
         Ok((listener, new_addr))
     }

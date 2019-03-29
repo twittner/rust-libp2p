@@ -20,8 +20,7 @@
 
 use crate::{
     MultiaddrSeq,
-    transport::Transport,
-    transport::TransportError,
+    transport::{Transport, TransportError, ListenerEvent},
     upgrade::{
         OutboundUpgrade,
         InboundUpgrade,
@@ -158,22 +157,25 @@ pub struct ListenerStream<T, U> {
 
 impl<T, U, F> Stream for ListenerStream<T, U>
 where
-    T: Stream<Item = (F, Multiaddr)>,
+    T: Stream<Item = ListenerEvent<F>>,
     F: Future,
     F::Item: AsyncRead + AsyncWrite,
     U: InboundUpgrade<F::Item> + Clone
 {
-    type Item = (ListenerUpgradeFuture<F, U>, Multiaddr);
+    type Item = ListenerEvent<ListenerUpgradeFuture<F, U>>;
     type Error = TransportUpgradeError<T::Error, U::Error>;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match try_ready!(self.stream.poll().map_err(TransportUpgradeError::Transport)) {
-            Some((x, a)) => {
-                let f = ListenerUpgradeFuture {
-                    future: x,
-                    upgrade: Either::A(Some(self.upgrade.clone()))
-                };
-                Ok(Async::Ready(Some((f, a))))
+            Some(event) => {
+                let event = event.map_upgrade(move |x, a| {
+                    let f = ListenerUpgradeFuture {
+                        future: x,
+                        upgrade: Either::A(Some(self.upgrade.clone()))
+                    };
+                    (f, a)
+                });
+                Ok(Async::Ready(Some(event)))
             }
             None => Ok(Async::Ready(None))
         }

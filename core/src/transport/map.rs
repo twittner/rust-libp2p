@@ -21,8 +21,7 @@
 use crate::{
     MultiaddrSeq,
     nodes::raw_swarm::ConnectedPoint,
-    transport::Transport,
-    transport::TransportError
+    transport::{Transport, TransportError, ListenerEvent}
 };
 use futures::{prelude::*, try_ready};
 use multiaddr::Multiaddr;
@@ -86,26 +85,29 @@ pub struct MapStream<T, F> {
 
 impl<T, F, A, B, X> Stream for MapStream<T, F>
 where
-    T: Stream<Item = (X, Multiaddr)>,
+    T: Stream<Item = ListenerEvent<X>>,
     X: Future<Item = A>,
     F: FnOnce(A, ConnectedPoint) -> B + Clone
 {
-    type Item = (MapFuture<X, F>, Multiaddr);
+    type Item = ListenerEvent<MapFuture<X, F>>;
     type Error = T::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match self.stream.poll()? {
-            Async::Ready(Some((future, addr))) => {
-                let f = self.fun.clone();
-                let p = ConnectedPoint::Listener {
-                    listen_addrs: self.listen_addrs.clone(),
-                    send_back_addr: addr.clone()
-                };
-                let future = MapFuture {
-                    inner: future,
-                    args: Some((f, p))
-                };
-                Ok(Async::Ready(Some((future, addr))))
+            Async::Ready(Some(event)) => {
+                let event = event.map_upgrade(|future, addr| {
+                    let f = self.fun.clone();
+                    let p = ConnectedPoint::Listener {
+                        listen_addrs: self.listen_addrs.clone(),
+                        send_back_addr: addr.clone()
+                    };
+                    let future = MapFuture {
+                        inner: future,
+                        args: Some((f, p))
+                    };
+                    (future, addr)
+                });
+                Ok(Async::Ready(Some(event)))
             }
             Async::Ready(None) => Ok(Async::Ready(None)),
             Async::NotReady => Ok(Async::NotReady)

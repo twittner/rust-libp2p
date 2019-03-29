@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{MultiaddrSeq, transport::{Transport, TransportError}};
+use crate::{MultiaddrSeq, transport::{ListenerEvent, Transport, TransportError}};
 use futures::prelude::*;
 use multiaddr::Multiaddr;
 use std::{error, fmt, sync::Arc};
@@ -37,9 +37,14 @@ where
     }
 }
 
-pub type Dial<O, E> = Box<dyn Future<Item = O, Error = E> + Send>;
-pub type Listener<O, E> = Box<dyn Stream<Item = (ListenerUpgrade<O, E>, Multiaddr), Error = E> + Send>;
-pub type ListenerUpgrade<O, E> = Box<dyn Future<Item = O, Error = E> + Send>;
+pub type Dial<O, E> =
+    Box<dyn Future<Item = O, Error = E> + Send>;
+
+pub type Listener<O, E> =
+    Box<dyn Stream<Item = ListenerEvent<ListenerUpgrade<O, E>>, Error = E> + Send>;
+
+pub type ListenerUpgrade<O, E> =
+    Box<dyn Future<Item = O, Error = E> + Send>;
 
 trait Abstract<O, E> {
     fn listen_on(&self, addr: Multiaddr) -> Result<(Listener<O, E>, MultiaddrSeq), TransportError<E>>;
@@ -57,9 +62,9 @@ where
 {
     fn listen_on(&self, addr: Multiaddr) -> Result<(Listener<O, E>, MultiaddrSeq), TransportError<E>> {
         let (listener, new_addr) = Transport::listen_on(self.clone(), addr)?;
-        let fut = listener.map(|(upgrade, addr)| {
+        let fut = listener.map(|event| event.map_upgrade(|upgrade, addr| {
             (Box::new(upgrade) as ListenerUpgrade<O, E>, addr)
-        });
+        }));
         Ok((Box::new(fut) as Box<_>, new_addr))
     }
 
