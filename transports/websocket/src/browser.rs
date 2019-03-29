@@ -30,7 +30,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use stdweb::web::TypedArray;
 use stdweb::{self, Reference};
-use libp2p_core::{MultiaddrSeq, Transport, transport::TransportError};
+use libp2p_core::{MultiaddrSeq, Transport, transport::{ListenerEvent, TransportError}};
 use tokio_io::{AsyncRead, AsyncWrite};
 
 /// Represents the configuration for a websocket transport capability for libp2p.
@@ -55,7 +55,7 @@ impl BrowserWsConfig {
 impl Transport for BrowserWsConfig {
     type Output = BrowserWsConn;
     type Error = IoError;   // TODO: better error type?
-    type Listener = stream::Empty<(Self::ListenerUpgrade, Multiaddr), IoError>;
+    type Listener = stream::Empty<ListenerEvent<Self::ListenerUpgrade>, IoError>;
     type ListenerUpgrade = future::Empty<Self::Output, IoError>;
     type Dial = Box<Future<Item = Self::Output, Error = IoError> + Send>;
 
