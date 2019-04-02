@@ -18,7 +18,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{Multiaddr, MultiaddrSeq, core::{Transport, transport::{ListenerEvent, TransportError}}};
+use crate::{Multiaddr, core::{Transport, transport::{ListenerEvent, TransportError}}};
 use futures::{prelude::*, try_ready};
 use lazy_static::lazy_static;
 use parking_lot::Mutex;
@@ -65,21 +65,18 @@ where
     type ListenerUpgrade = BandwidthFuture<TInner::ListenerUpgrade>;
     type Dial = BandwidthFuture<TInner::Dial>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), TransportError<Self::Error>> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::Listener, TransportError<Self::Error>> {
         let sinks = self.sinks;
         self.inner
             .listen_on(addr)
-            .map(|(inner, new_addr)| (BandwidthListener { inner, sinks }, new_addr))
+            .map(move |inner| BandwidthListener { inner, sinks })
     }
 
     fn dial(self, addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
         let sinks = self.sinks;
         self.inner
             .dial(addr)
-            .map(move |fut| BandwidthFuture {
-                inner: fut,
-                sinks,
-            })
+            .map(move |fut| BandwidthFuture { inner: fut, sinks })
     }
 
     fn nat_traversal(&self, server: &Multiaddr, observed: &Multiaddr) -> Option<Multiaddr> {
@@ -107,12 +104,8 @@ where
             None => return Ok(Async::Ready(None))
         };
 
-        let event = event.map_upgrade(|inner, addr| {
-            let fut = BandwidthFuture {
-                inner,
-                sinks: self.sinks.clone(),
-            };
-            (fut, addr)
+        let event = event.map(|inner| {
+            BandwidthFuture { inner, sinks: self.sinks.clone() }
         });
 
         Ok(Async::Ready(Some(event)))

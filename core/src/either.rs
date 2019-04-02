@@ -292,10 +292,10 @@ where
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match self {
             EitherListenStream::First(a) => a.poll()
-                .map(|i| (i.map(|v| (v.map(|e| e.map_upgrade(|o, addr| (EitherFuture::First(o), addr)))))))
+                .map(|i| (i.map(|v| (v.map(|e| e.map(EitherFuture::First))))))
                 .map_err(EitherError::A),
             EitherListenStream::Second(a) => a.poll()
-                .map(|i| (i.map(|v| (v.map(|e| e.map_upgrade(|o, addr| (EitherFuture::Second(o), addr)))))))
+                .map(|i| (i.map(|v| (v.map(|e| e.map(EitherFuture::Second))))))
                 .map_err(EitherError::B),
         }
     }

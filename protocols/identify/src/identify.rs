@@ -270,8 +270,9 @@ mod tests {
             Swarm::new(transport, Identify::new("c".to_string(), "d".to_string(), node2_public_key.clone()), local_peer_id)
         };
 
-        let actual_addr = Swarm::listen_on(&mut swarm1, "/ip4/127.0.0.1/tcp/0".parse().unwrap()).unwrap();
-        Swarm::dial_addr(&mut swarm2, actual_addr.head().clone()).unwrap();
+        Swarm::listen_on(&mut swarm1, "/ip4/127.0.0.1/tcp/54321".parse().unwrap()).unwrap();
+
+        Swarm::dial_addr(&mut swarm2, "/ip4/127.0.0.1/tcp/54321".parse().unwrap()).unwrap();
 
         let mut swarm1_good = false;
         let mut swarm2_good = false;

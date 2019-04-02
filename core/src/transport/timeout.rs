@@ -24,7 +24,7 @@
 //! underlying `Transport`.
 // TODO: add example
 
-use crate::{Multiaddr, MultiaddrSeq, Transport, transport::{TransportError, ListenerEvent}};
+use crate::{Multiaddr, Transport, transport::{TransportError, ListenerEvent}};
 use futures::{try_ready, Async, Future, Poll, Stream};
 use log::debug;
 use std::{error, fmt, time::Duration};
@@ -86,8 +86,8 @@ where
     type ListenerUpgrade = TokioTimerMapErr<Timeout<InnerTrans::ListenerUpgrade>>;
     type Dial = TokioTimerMapErr<Timeout<InnerTrans::Dial>>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), TransportError<Self::Error>> {
-        let (listener, addr) = self.inner.listen_on(addr)
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::Listener, TransportError<Self::Error>> {
+        let listener = self.inner.listen_on(addr)
             .map_err(|err| err.map(TransportTimeoutError::Other))?;
 
         let listener = TimeoutListener {
@@ -95,7 +95,7 @@ where
             timeout: self.incoming_timeout,
         };
 
-        Ok((listener, addr))
+        Ok(listener)
     }
 
     fn dial(self, addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
@@ -129,11 +129,8 @@ where
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         let poll_out = try_ready!(self.inner.poll().map_err(TransportTimeoutError::Other));
         if let Some(event) = poll_out {
-            let event = event.map_upgrade(move |inner_fut, addr| {
-                let fut = TokioTimerMapErr {
-                    inner: Timeout::new(inner_fut, self.timeout)
-                };
-                (fut, addr)
+            let event = event.map(move |inner_fut| {
+                TokioTimerMapErr { inner: Timeout::new(inner_fut, self.timeout) }
             });
             Ok(Async::Ready(Some(event)))
         } else {

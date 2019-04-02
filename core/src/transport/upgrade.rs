@@ -19,7 +19,6 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    MultiaddrSeq,
     transport::{Transport, TransportError, ListenerEvent},
     upgrade::{
         OutboundUpgrade,
@@ -69,10 +68,10 @@ where
         })
     }
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), TransportError<Self::Error>> {
-        let (inbound, addr) = self.inner.listen_on(addr)
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::Listener, TransportError<Self::Error>> {
+        let inbound = self.inner.listen_on(addr)
             .map_err(|err| err.map(TransportUpgradeError::Transport))?;
-        Ok((ListenerStream { stream: inbound, upgrade: self.upgrade }, addr))
+        Ok(ListenerStream { stream: inbound, upgrade: self.upgrade })
     }
 
     fn nat_traversal(&self, server: &Multiaddr, observed: &Multiaddr) -> Option<Multiaddr> {
@@ -168,12 +167,11 @@ where
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match try_ready!(self.stream.poll().map_err(TransportUpgradeError::Transport)) {
             Some(event) => {
-                let event = event.map_upgrade(move |x, a| {
-                    let f = ListenerUpgradeFuture {
+                let event = event.map(move |x| {
+                    ListenerUpgradeFuture {
                         future: x,
                         upgrade: Either::A(Some(self.upgrade.clone()))
-                    };
-                    (f, a)
+                    }
                 });
                 Ok(Async::Ready(Some(event)))
             }

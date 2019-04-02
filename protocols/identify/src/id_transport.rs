@@ -23,7 +23,7 @@
 use crate::protocol::{RemoteInfo, IdentifyProtocolConfig};
 use futures::{future, prelude::*, stream, AndThen, MapErr};
 use libp2p_core::{
-    Multiaddr, MultiaddrSeq, PeerId, PublicKey, muxing, Transport,
+    Multiaddr, PeerId, PublicKey, muxing, Transport,
     transport::{TransportError, ListenerEvent, upgrade::TransportUpgradeError},
     upgrade::{self, OutboundUpgradeApply, UpgradeError}
 };
@@ -75,7 +75,7 @@ where
     >;
 
     #[inline]
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), TransportError<Self::Error>> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::Listener, TransportError<Self::Error>> {
         Err(TransportError::MultiaddrNotSupported(addr))
     }
 

@@ -19,9 +19,8 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    MultiaddrSeq,
+    Endpoint,
     either::EitherError,
-    nodes::raw_swarm::ConnectedPoint,
     transport::{Transport, TransportError, ListenerEvent}
 };
 use futures::{future::Either, prelude::*, try_ready};
@@ -33,7 +32,6 @@ use std::error;
 pub struct AndThen<T, C> { transport: T, fun: C }
 
 impl<T, C> AndThen<T, C> {
-    #[inline]
     pub(crate) fn new(transport: T, fun: C) -> Self {
         AndThen { transport, fun }
     }
@@ -42,7 +40,7 @@ impl<T, C> AndThen<T, C> {
 impl<T, C, F, O> Transport for AndThen<T, C>
 where
     T: Transport,
-    C: FnOnce(T::Output, ConnectedPoint) -> F + Clone,
+    C: FnOnce(T::Output, Endpoint) -> F + Clone,
     F: IntoFuture<Item = O>,
     F::Error: error::Error,
 {
@@ -52,39 +50,25 @@ where
     type ListenerUpgrade = AndThenFuture<T::ListenerUpgrade, C, F::Future>;
     type Dial = AndThenFuture<T::Dial, C, F::Future>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), TransportError<Self::Error>> {
-        let (listening_stream, new_addrs) = self.transport.listen_on(addr)
-            .map_err(|err| err.map(EitherError::A))?;
-
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::Listener, TransportError<Self::Error>> {
+        let listener = self.transport.listen_on(addr).map_err(|err| err.map(EitherError::A))?;
         // Try to negotiate the protocol.
         // Note that failing to negotiate a protocol will never produce a future with an error.
         // Instead the `stream` will produce `Ok(Err(...))`.
         // `stream` can only produce an `Err` if `listening_stream` produces an `Err`.
-        let stream = AndThenStream {
-            stream: listening_stream,
-            listen_addrs: new_addrs.clone(),
-            fun: self.fun
-        };
-
-        Ok((stream, new_addrs))
+        let stream = AndThenStream { stream: listener, fun: self.fun };
+        Ok(stream)
     }
 
-    #[inline]
     fn dial(self, addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
-        let dialed_fut = self.transport.dial(addr.clone())
-            .map_err(|err| err.map(EitherError::A))?;
-
-        let connected_point = ConnectedPoint::Dialer { address: addr };
-
+        let dialed_fut = self.transport.dial(addr.clone()).map_err(|err| err.map(EitherError::A))?;
         let future = AndThenFuture {
             inner: Either::A(dialed_fut),
-            args: Some((self.fun, connected_point))
+            args: Some((self.fun, Endpoint::Dialer))
         };
-
         Ok(future)
     }
 
-    #[inline]
     fn nat_traversal(&self, server: &Multiaddr, observed: &Multiaddr) -> Option<Multiaddr> {
         self.transport.nat_traversal(server, observed)
     }
@@ -96,7 +80,6 @@ where
 #[derive(Debug, Clone)]
 pub struct AndThenStream<TListener, TMap> {
     stream: TListener,
-    listen_addrs: MultiaddrSeq,
     fun: TMap
 }
 
@@ -104,7 +87,7 @@ impl<TListener, TMap, TTransOut, TMapOut, TListUpgr, TTransErr> Stream for AndTh
 where
     TListener: Stream<Item = ListenerEvent<TListUpgr>, Error = TTransErr>,
     TListUpgr: Future<Item = TTransOut, Error = TTransErr>,
-    TMap: FnOnce(TTransOut, ConnectedPoint) -> TMapOut + Clone,
+    TMap: FnOnce(TTransOut, Endpoint) -> TMapOut + Clone,
     TMapOut: IntoFuture
 {
     type Item = ListenerEvent<AndThenFuture<TListUpgr, TMap, TMapOut::Future>>;
@@ -113,17 +96,11 @@ where
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match self.stream.poll().map_err(EitherError::A)? {
             Async::Ready(Some(event)) => {
-                let event = event.map_upgrade(move |future, addr| {
-                    let f = self.fun.clone();
-                    let p = ConnectedPoint::Listener {
-                        listen_addrs: self.listen_addrs.clone(),
-                        send_back_addr: addr.clone()
-                    };
-                    let future = AndThenFuture {
+                let event = event.map(move |future| {
+                    AndThenFuture {
                         inner: Either::A(future),
-                        args: Some((f, p))
-                    };
-                    (future, addr)
+                        args: Some((self.fun.clone(), Endpoint::Listener))
+                    }
                 });
                 Ok(Async::Ready(Some(event)))
             }
@@ -139,13 +116,13 @@ where
 #[derive(Debug)]
 pub struct AndThenFuture<TFut, TMap, TMapOut> {
     inner: Either<TFut, TMapOut>,
-    args: Option<(TMap, ConnectedPoint)>
+    args: Option<(TMap, Endpoint)>
 }
 
 impl<TFut, TMap, TMapOut> Future for AndThenFuture<TFut, TMap, TMapOut::Future>
 where
     TFut: Future,
-    TMap: FnOnce(TFut::Item, ConnectedPoint) -> TMapOut,
+    TMap: FnOnce(TFut::Item, Endpoint) -> TMapOut,
     TMapOut: IntoFuture
 {
     type Item = <TMapOut::Future as Future>::Item;

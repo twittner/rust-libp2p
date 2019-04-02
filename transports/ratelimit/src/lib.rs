@@ -21,7 +21,7 @@
 use aio_limited::{Limited, Limiter};
 use futures::prelude::*;
 use futures::try_ready;
-use libp2p_core::{Multiaddr, MultiaddrSeq, Transport, transport::{ListenerEvent, TransportError}};
+use libp2p_core::{Multiaddr, Transport, transport::{ListenerEvent, TransportError}};
 use log::error;
 use std::{error, fmt, io};
 use tokio_executor::Executor;
@@ -149,11 +149,10 @@ impl<T: Transport> Stream for Listener<T> {
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match try_ready!(self.0.value.poll().map_err(RateLimitedErr::Underlying)) {
             Some(event) => {
-                let event = event.map_upgrade(|upgrade, addr| {
+                let event = event.map(|upgrade| {
                     let r = self.0.rlimiter.clone();
                     let w = self.0.wlimiter.clone();
-                    let u = ListenerUpgrade(RateLimited::from_parts(upgrade, r, w));
-                    (u, addr)
+                    ListenerUpgrade(RateLimited::from_parts(upgrade, r, w))
                 });
                 Ok(Async::Ready(Some(event)))
             }
@@ -193,17 +192,14 @@ where
     type ListenerUpgrade = ListenerUpgrade<T>;
     type Dial = DialFuture<T::Dial>;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), TransportError<Self::Error>> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::Listener, TransportError<Self::Error>> {
         let r = self.rlimiter;
         let w = self.wlimiter;
         self.value
             .listen_on(addr)
             .map_err(|err| err.map(RateLimitedErr::Underlying))
-            .map(|(listener, a)| {
-                (
-                    Listener(RateLimited::from_parts(listener, r.clone(), w.clone())),
-                    a,
-                )
+            .map(|listener| {
+                Listener(RateLimited::from_parts(listener, r.clone(), w.clone()))
             })
     }
 

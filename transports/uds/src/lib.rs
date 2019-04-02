@@ -51,7 +51,7 @@ use futures::stream::Stream;
 use log::debug;
 use multiaddr::{Protocol, Multiaddr};
 use std::{io, path::PathBuf};
-use libp2p_core::{MultiaddrSeq, Transport, transport::{ListenerEvent, TransportError}};
+use libp2p_core::{Transport, transport::{ListenerEvent, TransportError}};
 use tokio_uds::{UnixListener, UnixStream};
 
 /// Represents the configuration for a Unix domain sockets transport capability for libp2p.
@@ -77,7 +77,7 @@ impl Transport for UdsConfig {
     type ListenerUpgrade = FutureResult<Self::Output, io::Error>;
     type Dial = tokio_uds::ConnectFuture;
 
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), TransportError<Self::Error>> {
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::Listener, TransportError<Self::Error>> {
         if let Ok(path) = multiaddr_to_path(&addr) {
             let listener = UnixListener::bind(&path);
             // We need to build the `Multiaddr` to return from this function. If an error happened,
@@ -87,9 +87,10 @@ impl Transport for UdsConfig {
                     debug!("Now listening on {}", addr);
                     let future = ListenerStream {
                         stream: listener.incoming(),
-                        addr: addr.clone()
+                        addr: addr.clone(),
+                        tell_new_addr: true
                     };
-                    Ok((future, MultiaddrSeq::from(addr)))
+                    Ok(future)
                 }
                 Err(_) => return Err(TransportError::MultiaddrNotSupported(addr)),
             }
@@ -143,7 +144,8 @@ fn multiaddr_to_path(addr: &Multiaddr) -> Result<PathBuf, ()> {
 
 pub struct ListenerStream<T> {
     stream: T,
-    addr: Multiaddr
+    addr: Multiaddr,
+    tell_new_addr: bool
 }
 
 impl<T> Stream for ListenerStream<T>
@@ -154,10 +156,18 @@ where
     type Error = T::Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        if self.tell_new_addr {
+            self.tell_new_addr = false;
+            return Ok(Async::Ready(Some(ListenerEvent::NewAddress(self.addr.clone()))))
+        }
         match try_ready!(self.stream.poll()) {
             Some(item) => {
                 debug!("incoming connection on {}", self.addr);
-                Ok(Async::Ready(Some(ListenerEvent::Upgrade(future::ok(item), self.addr.clone()))))
+                Ok(Async::Ready(Some(ListenerEvent::Upgrade {
+                    upgrade: future::ok(item),
+                    listen_addr: self.addr.clone(),
+                    remote_addr: self.addr.clone()
+                })))
             }
             None => Ok(Async::Ready(None))
         }
@@ -205,7 +215,7 @@ mod tests {
 
             let mut rt = Runtime::new().unwrap();
             let handle = rt.handle();
-            let listener = tcp.listen_on(addr2).unwrap().0
+            let listener = tcp.listen_on(addr2).unwrap()
                 .filter_map(ListenerEvent::into_upgrade)
                 .for_each(|(sock, _)| {
                     sock.and_then(|sock| {

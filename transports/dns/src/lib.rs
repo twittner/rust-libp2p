@@ -34,7 +34,7 @@
 //!
 
 use futures::{future::{self, Either, FutureResult, JoinAll}, prelude::*, stream, try_ready};
-use libp2p_core::{MultiaddrSeq, Transport, transport::{TransportError, ListenerEvent}};
+use libp2p_core::{Transport, transport::{TransportError, ListenerEvent}};
 use log::{debug, trace, log_enabled, Level};
 use multiaddr::{Protocol, Multiaddr};
 use std::{error, fmt, io, marker::PhantomData, net::IpAddr};
@@ -101,16 +101,14 @@ where
         >>
     >;
 
-    #[inline]
-    fn listen_on(self, addr: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), TransportError<Self::Error>> {
-        let (listener, new_addr) = self.inner.listen_on(addr)
-            .map_err(|err| err.map(DnsErr::Underlying))?;
+    fn listen_on(self, addr: Multiaddr) -> Result<Self::Listener, TransportError<Self::Error>> {
+        let listener = self.inner.listen_on(addr).map_err(|err| err.map(DnsErr::Underlying))?;
         let listener = listener
-            .map::<_, fn(_) -> _>(|event| event.map_upgrade(|upgr, multiaddr| {
-                (upgr.map_err::<fn(_) -> _, _>(DnsErr::Underlying), multiaddr)
+            .map::<_, fn(_) -> _>(|event| event.map(|upgr| {
+                upgr.map_err::<fn(_) -> _, _>(DnsErr::Underlying)
             }))
             .map_err::<_, fn(_) -> _>(DnsErr::Underlying);
-        Ok((listener, new_addr))
+        Ok(listener)
     }
 
     fn dial(self, addr: Multiaddr) -> Result<Self::Dial, TransportError<Self::Error>> {
@@ -318,7 +316,7 @@ where
 mod tests {
     use libp2p_tcp::TcpConfig;
     use futures::future;
-    use libp2p_core::{MultiaddrSeq, Transport, transport::TransportError};
+    use libp2p_core::{Transport, transport::TransportError};
     use multiaddr::{Protocol, Multiaddr};
     use super::DnsConfig;
 
@@ -337,7 +335,7 @@ mod tests {
             fn listen_on(
                 self,
                 _addr: Multiaddr,
-            ) -> Result<(Self::Listener, MultiaddrSeq), TransportError<Self::Error>> {
+            ) -> Result<Self::Listener, TransportError<Self::Error>> {
                 unreachable!()
             }
 

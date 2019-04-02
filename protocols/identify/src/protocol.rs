@@ -291,9 +291,17 @@ mod tests {
         let bg_thread = thread::spawn(move || {
             let transport = TcpConfig::new();
 
-            let (listener, addr) = transport
+            let mut listener = transport
                 .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
                 .unwrap();
+
+            let addr = listener.by_ref().wait()
+                .next()
+                .expect("some event")
+                .expect("no error")
+                .into_new_address()
+                .expect("listen address");
+
 
             tx.send(addr).unwrap();
 
@@ -327,7 +335,7 @@ mod tests {
 
         let transport = TcpConfig::new();
 
-        let future = transport.dial(rx.recv().unwrap().head().clone())
+        let future = transport.dial(rx.recv().unwrap().clone())
             .unwrap()
             .and_then(|socket| {
                 apply_outbound(socket, IdentifyProtocolConfig)

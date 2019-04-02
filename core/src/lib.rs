@@ -64,7 +64,6 @@ pub use multiaddr;
 pub use multistream_select::Negotiated;
 
 mod keys_proto;
-mod multiaddrs;
 mod peer_id;
 
 #[cfg(test)]
@@ -80,7 +79,6 @@ pub mod transport;
 pub mod upgrade;
 
 pub use self::multiaddr::Multiaddr;
-pub use self::multiaddrs::{MultiaddrSeq, MultiAddrIter, MultiAddrIterMut, IntoMultiAddrIter};
 pub use self::muxing::StreamMuxer;
 pub use self::peer_id::PeerId;
 pub use self::protocols_handler::{ProtocolsHandler, ProtocolsHandlerEvent};
@@ -104,6 +102,26 @@ impl std::ops::Not for Endpoint {
         match self {
             Endpoint::Dialer => Endpoint::Listener,
             Endpoint::Listener => Endpoint::Dialer
+        }
+    }
+}
+
+impl Endpoint {
+    /// Is this endpoint a dialer?
+    pub fn is_dialer(self) -> bool {
+        if let Endpoint::Dialer = self {
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Is this endpoint a listener?
+    pub fn is_listener(self) -> bool {
+        if let Endpoint::Listener = self {
+            true
+        } else {
+            false
         }
     }
 }

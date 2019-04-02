@@ -30,7 +30,7 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use stdweb::web::TypedArray;
 use stdweb::{self, Reference};
-use libp2p_core::{MultiaddrSeq, Transport, transport::{ListenerEvent, TransportError}};
+use libp2p_core::{Transport, transport::{ListenerEvent, TransportError}};
 use tokio_io::{AsyncRead, AsyncWrite};
 
 /// Represents the configuration for a websocket transport capability for libp2p.
@@ -60,7 +60,7 @@ impl Transport for BrowserWsConfig {
     type Dial = Box<Future<Item = Self::Output, Error = IoError> + Send>;
 
     #[inline]
-    fn listen_on(self, a: Multiaddr) -> Result<(Self::Listener, MultiaddrSeq), TransportError<Self::Error>> {
+    fn listen_on(self, a: Multiaddr) -> Result<Self::Listener, TransportError<Self::Error>> {
         // Listening is never supported.
         Err(TransportError::MultiaddrNotSupported(a))
     }

@@ -41,11 +41,11 @@
 //!
 
 use crate::{
-    Transport, Multiaddr, MultiaddrSeq, MultiAddrIter, PeerId,
-    InboundUpgrade, OutboundUpgrade, UpgradeInfo, ProtocolName,
+    Transport, Multiaddr, PeerId, InboundUpgrade, OutboundUpgrade, UpgradeInfo, ProtocolName,
     muxing::StreamMuxer,
     nodes::{
         handled_node::NodeHandler,
+        listeners,
         node::Substream,
         raw_swarm::{self, RawSwarm, RawSwarmEvent}
     },
@@ -78,19 +78,9 @@ where TTransport: Transport,
     /// List of protocols that the behaviour says it supports.
     supported_protocols: SmallVec<[Vec<u8>; 16]>,
 
-    /// List of multiaddresses we're listening on.
-    listened_addrs: ListenedAddrs,
-
     /// List of multiaddresses we're listening on, after account for external IP addresses and
     /// similar mechanisms.
     external_addrs: SmallVec<[Multiaddr; 8]>,
-}
-
-// Helper struct to facilitate the construction of exact size iterators
-// by maintaining the total length of `Multiaddr` elements.
-struct ListenedAddrs {
-    len: usize,
-    addrs: SmallVec<[MultiaddrSeq; 8]>
 }
 
 impl<TTransport, TBehaviour> Deref for Swarm<TTransport, TBehaviour>
@@ -161,15 +151,10 @@ where TBehaviour: NetworkBehaviour,
     /// Starts listening on the given address.
     ///
     /// Returns an error if the address is not supported.
-    /// On success, returns an alternative version of the address.
+    /// On success, returns the ID of the listener.
     #[inline]
-    pub fn listen_on(me: &mut Self, addr: Multiaddr) -> Result<MultiaddrSeq, TransportError<TTransport::Error>> {
-        let result = me.raw_swarm.listen_on(addr);
-        if let Ok(ref addrs) = result {
-            me.listened_addrs.addrs.push(addrs.clone());
-            me.listened_addrs.len += addrs.len();
-        }
-        result
+    pub fn listen_on(me: &mut Self, addr: Multiaddr) -> Result<listeners::Id, TransportError<TTransport::Error>> {
+        me.raw_swarm.listen_on(addr)
     }
 
     /// Tries to dial the given address.
@@ -205,7 +190,7 @@ where TBehaviour: NetworkBehaviour,
     /// Returns an iterator that produces the list of addresses we're listening on.
     #[inline]
     pub fn listeners(me: &Self) -> impl Iterator<Item = &Multiaddr> {
-        RawSwarm::listeners(&me.raw_swarm)
+        me.raw_swarm.listen_addrs()
     }
 
     /// Returns an iterator that produces the list of addresses that other nodes can use to reach
@@ -288,6 +273,8 @@ where TBehaviour: NetworkBehaviour,
                     let handler = self.behaviour.new_handler();
                     incoming.accept(handler.into_node_handler_builder());
                 },
+                Async::Ready(RawSwarmEvent::NewListenerAddress { .. }) => {},
+                Async::Ready(RawSwarmEvent::ExpiredListenerAddress { .. }) => {},
                 Async::Ready(RawSwarmEvent::ListenerClosed { .. }) => {},
                 Async::Ready(RawSwarmEvent::IncomingConnectionError { .. }) => {},
                 Async::Ready(RawSwarmEvent::DialError { peer_id, multiaddr, error, new_state }) => {
@@ -306,7 +293,7 @@ where TBehaviour: NetworkBehaviour,
                 let mut parameters = PollParameters {
                     local_peer_id: &mut self.raw_swarm.local_peer_id(),
                     supported_protocols: &self.supported_protocols,
-                    listened_addrs: &self.listened_addrs,
+                    listened_addrs: self.raw_swarm.listen_addrs().collect(), // TODO: optimise
                     external_addrs: &self.external_addrs,
                     nat_traversal: &move |a, b| transport.nat_traversal(a, b),
                 };
@@ -415,7 +402,7 @@ pub trait NetworkBehaviourEventProcess<TEvent> {
 pub struct PollParameters<'a: 'a> {
     local_peer_id: &'a PeerId,
     supported_protocols: &'a [Vec<u8>],
-    listened_addrs: &'a ListenedAddrs,
+    listened_addrs: Vec<&'a Multiaddr>, // TODO: optimise
     external_addrs: &'a [Multiaddr],
     nat_traversal: &'a dyn Fn(&Multiaddr, &Multiaddr) -> Option<Multiaddr>,
 }
@@ -435,10 +422,7 @@ impl<'a> PollParameters<'a> {
     /// Returns the list of the addresses we're listening on.
     #[inline]
     pub fn listened_addresses(&self) -> impl ExactSizeIterator<Item = &Multiaddr> {
-        ExactAddrIter {
-            len: self.listened_addrs.len,
-            iter: self.listened_addrs.addrs.iter().flat_map(MultiaddrSeq::iter)
-        }
+        self.listened_addrs.iter().map(|ma| *ma)
     }
 
     /// Returns the list of the addresses nodes can use to reach us.
@@ -457,35 +441,6 @@ impl<'a> PollParameters<'a> {
     #[inline]
     pub fn nat_traversal(&self, server: &Multiaddr, observed: &Multiaddr) -> Option<Multiaddr> {
         (self.nat_traversal)(server, observed)
-    }
-}
-
-/// Exact iterator over listener addresses.
-struct ExactAddrIter<'a> {
-    len: usize,
-    iter: std::iter::FlatMap
-            <
-                std::slice::Iter<'a, MultiaddrSeq>,
-                MultiAddrIter<'a>,
-                fn(&'a MultiaddrSeq) -> MultiAddrIter<'a>
-            >
-}
-
-impl<'a> Iterator for ExactAddrIter<'a> {
-    type Item = &'a Multiaddr;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.len, Some(self.len))
-    }
-}
-
-impl<'a> ExactSizeIterator for ExactAddrIter<'a> {
-    fn len(&self) -> usize {
-        self.len
     }
 }
 
@@ -600,7 +555,6 @@ where TBehaviour: NetworkBehaviour,
             raw_swarm,
             behaviour: self.behaviour,
             supported_protocols,
-            listened_addrs: ListenedAddrs { len: 0, addrs: SmallVec::new() },
             external_addrs: SmallVec::new(),
         }
     }
