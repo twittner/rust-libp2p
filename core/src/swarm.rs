@@ -217,6 +217,19 @@ where TBehaviour: NetworkBehaviour,
     }
 }
 
+#[derive(Debug)]
+pub enum SwarmEvent<T> {
+    NewListenerAddress {
+        listener_id: listeners::Id,
+        listen_addr: Multiaddr
+    },
+    ExpiredListenerAddress {
+        listener_id: listeners::Id,
+        listen_addr: Multiaddr
+    },
+    Behaviour(T)
+}
+
 impl<TTransport, TBehaviour, TMuxer> Stream for Swarm<TTransport, TBehaviour>
 where TBehaviour: NetworkBehaviour,
       TMuxer: StreamMuxer + Send + Sync + 'static,
@@ -247,11 +260,11 @@ where TBehaviour: NetworkBehaviour,
       <<<<TBehaviour::ProtocolsHandler as IntoProtocolsHandler>::Handler as ProtocolsHandler>::OutboundProtocol as UpgradeInfo>::InfoIter as IntoIterator>::IntoIter: Send + 'static,
       <NodeHandlerWrapper<<TBehaviour::ProtocolsHandler as IntoProtocolsHandler>::Handler> as NodeHandler>::OutboundOpenInfo: Send + 'static, // TODO: shouldn't be necessary
 {
-    type Item = TBehaviour::OutEvent;
+    type Item = SwarmEvent<TBehaviour::OutEvent>;
     type Error = io::Error;
 
     #[inline]
-    fn poll(&mut self) -> Poll<Option<TBehaviour::OutEvent>, io::Error> {
+    fn poll(&mut self) -> Poll<Option<Self::Item>, io::Error> {
         loop {
             let mut raw_swarm_not_ready = false;
 
@@ -273,8 +286,18 @@ where TBehaviour: NetworkBehaviour,
                     let handler = self.behaviour.new_handler();
                     incoming.accept(handler.into_node_handler_builder());
                 },
-                Async::Ready(RawSwarmEvent::NewListenerAddress { .. }) => {},
-                Async::Ready(RawSwarmEvent::ExpiredListenerAddress { .. }) => {},
+                Async::Ready(RawSwarmEvent::NewListenerAddress { listener_id, listen_addr }) => {
+                    return Ok(Async::Ready(Some(SwarmEvent::NewListenerAddress {
+                        listener_id,
+                        listen_addr
+                    })))
+                }
+                Async::Ready(RawSwarmEvent::ExpiredListenerAddress { listener_id, listen_addr }) => {
+                    return Ok(Async::Ready(Some(SwarmEvent::ExpiredListenerAddress {
+                        listener_id,
+                        listen_addr
+                    })))
+                }
                 Async::Ready(RawSwarmEvent::ListenerClosed { .. }) => {},
                 Async::Ready(RawSwarmEvent::IncomingConnectionError { .. }) => {},
                 Async::Ready(RawSwarmEvent::DialError { peer_id, multiaddr, error, new_state }) => {
@@ -304,7 +327,7 @@ where TBehaviour: NetworkBehaviour,
                 Async::NotReady if raw_swarm_not_ready => return Ok(Async::NotReady),
                 Async::NotReady => (),
                 Async::Ready(NetworkBehaviourAction::GenerateEvent(event)) => {
-                    return Ok(Async::Ready(Some(event)));
+                    return Ok(Async::Ready(Some(SwarmEvent::Behaviour(event))))
                 },
                 Async::Ready(NetworkBehaviourAction::DialAddress { address }) => {
                     let _ = Swarm::dial_addr(self, address);

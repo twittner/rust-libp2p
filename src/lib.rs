@@ -206,7 +206,7 @@ pub mod simple;
 
 pub use self::core::{
     identity,
-    Transport, PeerId, Swarm,
+    Transport, PeerId, Swarm, SwarmEvent,
     transport::TransportError,
     upgrade::{InboundUpgrade, InboundUpgradeExt, OutboundUpgrade, OutboundUpgradeExt}
 };
