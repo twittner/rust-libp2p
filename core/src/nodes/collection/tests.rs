@@ -155,9 +155,12 @@ fn events_in_a_node_reaches_the_collection_stream() {
     })).expect("tokio works");
 
     let cs_fut = cs.clone();
+    cs.lock().start_broadcast(&InEvent::NextState);
     rt.block_on(future::poll_fn(move || -> Poll<_, ()> {
         let mut cs = cs_fut.lock();
-        cs.broadcast_event(&InEvent::NextState);
+        if let Ok(Async::NotReady) = cs.complete_broadcast() {
+            return Ok(Async::NotReady)
+        }
         assert_matches!(cs.poll(), Async::Ready(CollectionEvent::NodeReached(reach_ev)) => {
             reach_ev.accept(());
         });
@@ -165,9 +168,12 @@ fn events_in_a_node_reaches_the_collection_stream() {
     })).expect("tokio works");
 
     let cs_fut = cs.clone();
+    cs.lock().start_broadcast(&InEvent::NextState);
     rt.block_on(future::poll_fn(move || -> Poll<_, ()> {
         let mut cs = cs_fut.lock();
-        cs.broadcast_event(&InEvent::NextState);
+        if let Ok(Async::NotReady) = cs.complete_broadcast() {
+            return Ok(Async::NotReady)
+        }
         assert_matches!(cs.poll(), Async::Ready(CollectionEvent::NodeEvent{peer: _, event}) => {
             assert_matches!(event, OutEvent::Custom("init"));
         });
@@ -176,9 +182,12 @@ fn events_in_a_node_reaches_the_collection_stream() {
 
 
     let cs_fut = cs.clone();
+    cs.lock().start_broadcast(&InEvent::NextState);
     rt.block_on(future::poll_fn(move || -> Poll<_, ()> {
         let mut cs = cs_fut.lock();
-        cs.broadcast_event(&InEvent::NextState);
+        if let Ok(Async::NotReady) = cs.complete_broadcast() {
+            return Ok(Async::NotReady)
+        }
         assert_matches!(cs.poll(), Async::Ready(CollectionEvent::NodeEvent{peer: _, event}) => {
             assert_matches!(event, OutEvent::Custom("from handler 1"));
         });
@@ -186,9 +195,12 @@ fn events_in_a_node_reaches_the_collection_stream() {
     })).expect("tokio works");
 
     let cs_fut = cs.clone();
+    cs.lock().start_broadcast(&InEvent::NextState);
     rt.block_on(future::poll_fn(move || -> Poll<_, ()> {
         let mut cs = cs_fut.lock();
-        cs.broadcast_event(&InEvent::NextState);
+        if let Ok(Async::NotReady) = cs.complete_broadcast() {
+            return Ok(Async::NotReady)
+        }
         assert_matches!(cs.poll(), Async::Ready(CollectionEvent::NodeEvent{peer: _, event}) => {
             assert_matches!(event, OutEvent::Custom("from handler 2"));
         });
@@ -239,12 +251,12 @@ fn task_closed_with_error_when_task_is_connected_yields_node_error() {
 
     // Kick it off
     let cs_fut = cs.clone();
+    cs.lock().start_broadcast(&InEvent::NextState);
     rt.block_on(future::poll_fn(move || -> Poll<_, ()> {
         let mut cs = cs_fut.lock();
         assert_matches!(cs.poll(), Async::NotReady);
         // send an event so the Handler errors in two polls
-        cs.broadcast_event(&InEvent::NextState);
-        Ok(Async::Ready(()))
+        cs.complete_broadcast()
     })).expect("tokio works");
 
     // Accept the new node

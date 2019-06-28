@@ -28,7 +28,7 @@
 
 pub mod collection;
 pub mod handled_node;
-pub mod handled_node_tasks;
+pub mod task;
 pub mod listeners;
 pub mod node;
 pub mod raw_swarm;

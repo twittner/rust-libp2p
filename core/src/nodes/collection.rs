@@ -23,9 +23,8 @@ use crate::{
     muxing::StreamMuxer,
     nodes::{
         node::Substream,
-        handled_node_tasks::{HandledNodesEvent, HandledNodesTasks, TaskClosedEvent},
-        handled_node_tasks::{IntoNodeHandler, Task as HandledNodesTask, TaskId, ClosedTask},
-        handled_node::{HandledNodeError, NodeHandler}
+        handled_node::{HandledNodeError, IntoNodeHandler, NodeHandler},
+        task::{self, ClosedTask, TaskEntryRef, TaskId}
     }
 };
 use fnv::FnvHashMap;
@@ -40,7 +39,7 @@ pub struct CollectionStream<TInEvent, TOutEvent, THandler, TReachErr, THandlerEr
     ///
     /// The user data contains the state of the task. If `Connected`, then a corresponding entry
     /// must be present in `nodes`.
-    inner: HandledNodesTasks<TInEvent, TOutEvent, THandler, TReachErr, THandlerErr, TaskState<TConnInfo, TUserData>, TConnInfo>,
+    inner: task::Manager<TInEvent, TOutEvent, THandler, TReachErr, THandlerErr, TaskState<TConnInfo, TUserData>, TConnInfo>,
 
     /// List of nodes, with the task id that handles this node. The corresponding entry in `tasks`
     /// must always be in the `Connected` state.
@@ -310,7 +309,7 @@ where
     #[inline]
     pub fn new() -> Self {
         CollectionStream {
-            inner: HandledNodesTasks::new(),
+            inner: task::Manager::new(),
             nodes: Default::default(),
         }
     }
@@ -357,12 +356,12 @@ where
     }
 
     /// Sends an event to all nodes.
-    #[inline]
-    pub fn broadcast_event(&mut self, event: &TInEvent)
-    where TInEvent: Clone,
-    {
-        // TODO: remove the ones we're not connected to?
-        self.inner.broadcast_event(event)
+    pub fn start_broadcast(&mut self, event: &TInEvent) where TInEvent: Clone {
+        self.inner.start_broadcast(event)
+    }
+
+    pub fn complete_broadcast(&mut self) -> Poll<(), ()> {
+        self.inner.complete_broadcast()
     }
 
     /// Adds an existing connection to a node to the collection.
@@ -383,8 +382,8 @@ where
         TConnInfo: Clone + Send + 'static,
         TPeerId: Clone,
     {
-        // Calling `HandledNodesTasks::add_connection` is the same as calling
-        // `HandledNodesTasks::add_reach_attempt`, except that we don't get any `NodeReached` event.
+        // Calling `TaskCollection::add_connection` is the same as calling
+        // `TaskCollection::add_reach_attempt`, except that we don't get any `NodeReached` event.
         // We therefore implement this method the same way as calling `add_reach_attempt` followed
         // with simulating a received `NodeReached` event and accepting it.
 
@@ -451,29 +450,29 @@ where
         };
 
         match item {
-            HandledNodesEvent::TaskClosed { task, result, handler } => {
+            task::Event::TaskClosed { task, result, handler } => {
                 let id = task.id();
                 let user_data = task.into_user_data();
 
                 match (user_data, result, handler) {
-                    (TaskState::Pending, TaskClosedEvent::Reach(err), Some(handler)) => {
+                    (TaskState::Pending, task::Error::Reach(err), Some(handler)) => {
                         Async::Ready(CollectionEvent::ReachError {
                             id: ReachAttemptId(id),
                             error: err,
                             handler,
                         })
                     },
-                    (TaskState::Pending, TaskClosedEvent::Node(_), _) => {
+                    (TaskState::Pending, task::Error::Node(_), _) => {
                         panic!("We switch the task state to Connected once we're connected, and \
-                                a TaskClosedEvent::Node can only happen after we're \
+                                a TaskClosedError::Node can only happen after we're \
                                 connected; QED");
                     },
-                    (TaskState::Pending, TaskClosedEvent::Reach(_), None) => {
-                        // TODO: this could be improved in the API of HandledNodesTasks
-                        panic!("The HandledNodesTasks is guaranteed to always return the handler \
-                                when producing a TaskClosedEvent::Reach error");
+                    (TaskState::Pending, task::Error::Reach(_), None) => {
+                        // TODO: this could be improved in the API of TaskCollection
+                        panic!("The TaskCollection is guaranteed to always return the handler \
+                                when producing a TaskClosedError::Reach error");
                     },
-                    (TaskState::Connected(conn_info, user_data), TaskClosedEvent::Node(err), _handler) => {
+                    (TaskState::Connected(conn_info, user_data), task::Error::Node(err), _handler) => {
                         debug_assert!(_handler.is_none());
                         let _node_task_id = self.nodes.remove(conn_info.peer_id());
                         debug_assert_eq!(_node_task_id, Some(id));
@@ -483,13 +482,13 @@ where
                             user_data,
                         })
                     },
-                    (TaskState::Connected(_, _), TaskClosedEvent::Reach(_), _) => {
-                        panic!("A TaskClosedEvent::Reach can only happen before we are connected \
+                    (TaskState::Connected(_, _), task::Error::Reach(_), _) => {
+                        panic!("A TaskClosedError::Reach can only happen before we are connected \
                                 to a node; therefore the TaskState won't be Connected; QED");
                     },
                 }
             },
-            HandledNodesEvent::NodeReached { task, conn_info } => {
+            task::Event::NodeReached { task, conn_info } => {
                 let id = task.id();
                 drop(task);
                 Async::Ready(CollectionEvent::NodeReached(CollectionReachEvent {
@@ -498,7 +497,7 @@ where
                     conn_info: Some(conn_info),
                 }))
             },
-            HandledNodesEvent::NodeEvent { task, event } => {
+            task::Event::NodeEvent { task, event } => {
                 let conn_info = match task.user_data() {
                     TaskState::Connected(conn_info, _) => conn_info.clone(),
                     _ => panic!("we can only receive NodeEvent events from a task after we \
@@ -566,7 +565,7 @@ where
 
 /// Access to a peer in the collection.
 pub struct PeerMut<'a, TInEvent, TUserData, TConnInfo = PeerId, TPeerId = PeerId> {
-    inner: HandledNodesTask<'a, TInEvent, TaskState<TConnInfo, TUserData>>,
+    inner: TaskEntryRef<'a, TInEvent, TaskState<TConnInfo, TUserData>>,
     nodes: &'a mut FnvHashMap<TPeerId, TaskId>,
 }
 
@@ -612,9 +611,12 @@ where
     }
 
     /// Sends an event to the given node.
-    #[inline]
-    pub fn send_event(&mut self, event: TInEvent) {
-        self.inner.send_event(event)
+    pub fn start_send_event(&mut self, event: TInEvent) {
+        self.inner.start_send_event(event)
+    }
+
+    pub fn complete_send_event(&mut self) -> Poll<(), ()> {
+        self.inner.complete_send_event()
     }
 
     /// Closes the connections to this node. Returns the user data.
@@ -639,8 +641,12 @@ where
     /// The reach attempt will only be effectively cancelled once the peer (the object you're
     /// manipulating) has received some network activity. However no event will be ever be
     /// generated from this reach attempt, and this takes effect immediately.
-    pub fn take_over(&mut self, id: InterruptedReachAttempt<TInEvent, TConnInfo, TUserData>) {
-        let _state = self.inner.take_over(id.inner);
-        debug_assert!(if let TaskState::Pending = _state { true } else { false });
+    pub fn start_take_over(&mut self, id: InterruptedReachAttempt<TInEvent, TConnInfo, TUserData>) {
+        let _state = self.inner.start_take_over(id.inner);
+        debug_assert!(if let TaskState::Pending = _state { true } else { false })
+    }
+
+    pub fn complete_take_over(&mut self) -> Poll<(), ()> {
+        self.inner.complete_take_over()
     }
 }

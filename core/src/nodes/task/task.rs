@@ -1,0 +1,359 @@
+use crate::{
+    muxing::StreamMuxer,
+    nodes::{
+        handled_node::{HandledNode, IntoNodeHandler, NodeHandler},
+        node::{Close, Substream}
+    }
+};
+use futures::{prelude::*, stream, sync::mpsc};
+use log::debug;
+use smallvec::SmallVec;
+use std::{fmt, mem};
+use super::{TaskId, Error};
+
+/// Message to transmit from the public API to a task.
+#[derive(Debug)]
+pub enum ToTaskMessage<T> {
+    /// An event to transmit to the node handler.
+    HandlerEvent(T),
+    /// When received, stores the parameter inside the task and keeps it alive
+    /// until we have an acknowledgment that the remote has accepted our handshake.
+    TakeOver(mpsc::Sender<ToTaskMessage<T>>)
+}
+
+/// Message to transmit from a task to the public API.
+#[derive(Debug)]
+pub enum FromTaskMessage<T, H, E, HE, C> {
+    /// A connection to a node has succeeded.
+    NodeReached(C),
+    /// The task closed.
+    TaskClosed(Error<E, HE>, Option<H>),
+    /// An event from the node.
+    NodeEvent(T)
+}
+
+/// Implementation of `Future` that handles a single node.
+pub struct Task<F, M, H, I, O, E, C>
+where
+    M: StreamMuxer,
+    H: IntoNodeHandler<C>,
+    H::Handler: NodeHandler<Substream = Substream<M>>
+{
+    /// The ID of this task.
+    id: TaskId,
+
+    /// Sender to transmit messages to the outside.
+    sender: mpsc::Sender<(FromTaskMessage<O, H, E, <H::Handler as NodeHandler>::Error, C>, TaskId)>,
+
+    /// Receiver of messages from the outsize.
+    receiver: stream::Fuse<mpsc::Receiver<ToTaskMessage<I>>>,
+
+    /// Inner state of this `Task`.
+    state: State<F, M, H, I, O, E, C>,
+
+    /// Channels to keep alive for as long as we don't have an acknowledgment from the remote.
+    taken_over: SmallVec<[mpsc::Sender<ToTaskMessage<I>>; 1]>
+}
+
+impl<F, M, H, I, O, E, C> Task<F, M, H, I, O, E, C>
+where
+    M: StreamMuxer,
+    H: IntoNodeHandler<C>,
+    H::Handler: NodeHandler<Substream = Substream<M>>
+{
+    /// Create a new task to connect and handle some node.
+    pub fn new (
+        i: TaskId,
+        s: mpsc::Sender<(FromTaskMessage<O, H, E, <H::Handler as NodeHandler>::Error, C>, TaskId)>,
+        r: mpsc::Receiver<ToTaskMessage<I>>,
+        f: F,
+        h: H
+    ) -> Self {
+        Task {
+            id: i,
+            sender: s,
+            receiver: r.fuse(),
+            state: State::Future { future: f, handler: h, events_buffer: Vec::new() },
+            taken_over: SmallVec::new()
+        }
+    }
+
+    /// Create a task for an existing node we are already connected to.
+    pub fn node (
+        i: TaskId,
+        s: mpsc::Sender<(FromTaskMessage<O, H, E, <H::Handler as NodeHandler>::Error, C>, TaskId)>,
+        r: mpsc::Receiver<ToTaskMessage<I>>,
+        n: HandledNode<M, H::Handler>
+    ) -> Self {
+        Task {
+            id: i,
+            sender: s,
+            receiver: r.fuse(),
+            state: State::Node(n),
+            taken_over: SmallVec::new()
+        }
+    }
+}
+
+/// State of the future.
+enum State<F, M, H, I, O, E, C>
+where
+    M: StreamMuxer,
+    H: IntoNodeHandler<C>,
+    H::Handler: NodeHandler<Substream = Substream<M>>
+{
+    /// Future to resolve to connect to the node.
+    Future {
+        /// The future that will attempt to reach the node.
+        future: F,
+        /// The handler that will be used to build the `HandledNode`.
+        handler: H,
+        /// While we are dialing the future, we need to buffer the events received on
+        /// `receiver` so that they get delivered once dialing succeeds. We can't simply leave
+        /// events in `receiver` because we have to detect if it gets closed.
+        events_buffer: Vec<I>
+    },
+
+    /// An event should be sent to the outside world.
+    SendEvent {
+        /// The node, if available.
+        node: Option<HandledNode<M, H::Handler>>,
+        /// The actual event message to send.
+        event: FromTaskMessage<O, H, E, <H::Handler as NodeHandler>::Error, C>
+    },
+
+    /// We started sending an event, now drive the sending to completion.
+    ///
+    /// The `bool` parameter determines if we transition to `State::Node`
+    /// afterwards or to `State::Closing` (assuming we have `Some` node,
+    /// otherwise the task will end).
+    PollComplete(Option<HandledNode<M, H::Handler>>, bool),
+
+    /// Fully functional node.
+    Node(HandledNode<M, H::Handler>),
+
+    /// Node closing.
+    Closing(Close<M>),
+
+    /// Interim state that can only be observed externally if the future
+    /// resolved to a value previously.
+    Undefined
+}
+
+impl<F, M, H, I, O, E, C> Future for Task<F, M, H, I, O, E, C>
+where
+    M: StreamMuxer,
+    F: Future<Item = (C, M), Error = E>,
+    H: IntoNodeHandler<C>,
+    H::Handler: NodeHandler<Substream = Substream<M>, InEvent = I, OutEvent = O>
+{
+    type Item = ();
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<(), ()> {
+        'poll: loop {
+            match mem::replace(&mut self.state, State::Undefined) {
+                State::Future { mut future, handler, mut events_buffer } => {
+                    // If self.receiver is closed, we stop the task.
+                    loop {
+                        match self.receiver.poll() {
+                            Ok(Async::Ready(None)) => return Ok(Async::Ready(())),
+                            Ok(Async::Ready(Some(ToTaskMessage::HandlerEvent(event)))) =>
+                                events_buffer.push(event),
+                            Ok(Async::Ready(Some(ToTaskMessage::TakeOver(take_over)))) =>
+                                self.taken_over.push(take_over),
+                            Ok(Async::NotReady) => break,
+                            Err(()) => unreachable!("An `mpsc::Receiver` does not error.")
+                        }
+                    }
+                    // Check whether dialing succeeded.
+                    match future.poll() {
+                        Ok(Async::Ready((conn_info, muxer))) => {
+                            let mut node = HandledNode::new(muxer, handler.into_handler(&conn_info));
+                            for event in events_buffer {
+                                node.inject_event(event)
+                            }
+                            self.state = State::SendEvent {
+                                node: Some(node),
+                                event: FromTaskMessage::NodeReached(conn_info)
+                            }
+                        }
+                        Ok(Async::NotReady) => {
+                            self.state = State::Future { future, handler, events_buffer };
+                            return Ok(Async::NotReady)
+                        }
+                        Err(e) => {
+                            let event = FromTaskMessage::TaskClosed(Error::Reach(e), Some(handler));
+                            self.state = State::SendEvent { node: None, event }
+                        }
+                    }
+                }
+                State::Node(mut node) => {
+                    // Start by handling commands received from the outside of the task.
+                    if !self.receiver.is_done() {
+                        loop {
+                            match self.receiver.poll() {
+                                Ok(Async::NotReady) => break,
+                                Ok(Async::Ready(Some(ToTaskMessage::HandlerEvent(event)))) =>
+                                    node.inject_event(event),
+                                Ok(Async::Ready(Some(ToTaskMessage::TakeOver(take_over)))) =>
+                                    self.taken_over.push(take_over),
+                                Ok(Async::Ready(None)) => {
+                                    // Node closed by the external API; start closing.
+                                    self.state = State::Closing(node.close());
+                                    continue 'poll
+                                }
+                                Err(()) => unreachable!("An `mpsc::Receiver` does not error.")
+                            }
+                        }
+                    }
+                    // Process the node.
+                    loop {
+                        if !self.taken_over.is_empty() && node.is_remote_acknowledged() {
+                            self.taken_over.clear()
+                        }
+                        match node.poll() {
+                            Ok(Async::NotReady) => {
+                                self.state = State::Node(node);
+                                return Ok(Async::NotReady)
+                            }
+                            Ok(Async::Ready(event)) => {
+                                self.state = State::SendEvent {
+                                    node: Some(node),
+                                    event: FromTaskMessage::NodeEvent(event)
+                                };
+                                continue 'poll
+                            }
+                            Err(err) => {
+                                let event = FromTaskMessage::TaskClosed(Error::Node(err), None);
+                                self.state = State::SendEvent { node: None, event };
+                                continue 'poll
+                            }
+                        }
+                    }
+                }
+                // Deliver an event to the outside world.
+                State::SendEvent { node, event } => {
+                    let is_closed =
+                        if let FromTaskMessage::TaskClosed(..) = event {
+                            true
+                        } else {
+                            false
+                        };
+                    match self.sender.start_send((event, self.id)) {
+                        Ok(AsyncSink::NotReady((event, _))) => {
+                            self.state = State::SendEvent { node, event };
+                            return Ok(Async::NotReady)
+                        }
+                        Ok(AsyncSink::Ready) => self.state = State::PollComplete(node, is_closed),
+                        Err(_) => {
+                            debug!("node task could not deliver event; terminating");
+                            return Ok(Async::Ready(()))
+                        }
+                    }
+                }
+                // We started delivering an event, now try to complete the sending.
+                State::PollComplete(node, is_closed) =>
+                    match self.sender.poll_complete() {
+                        Ok(Async::NotReady) => {
+                            self.state = State::PollComplete(node, is_closed);
+                            return Ok(Async::NotReady)
+                        }
+                        Ok(Async::Ready(())) =>
+                            if let Some(n) = node {
+                                if is_closed {
+                                    self.state = State::Closing(n.close())
+                                } else {
+                                    self.state = State::Node(n)
+                                }
+                            } else {
+                                return Ok(Async::Ready(()))
+                            }
+                        Err(_) => {
+                            debug!("node task could not deliver event; terminating");
+                            return Ok(Async::Ready(()))
+                        }
+                    }
+                State::Closing(mut closing) => {
+                    match closing.poll() {
+                        Ok(Async::Ready(())) | Err(_) =>
+                            return Ok(Async::Ready(())), // End the task.
+                        Ok(Async::NotReady) => {
+                            self.state = State::Closing(closing);
+                            return Ok(Async::NotReady)
+                        }
+                    }
+                }
+                // This happens if a previous poll has resolved the future.
+                // The API contract of futures is that we shouldn't be polled again.
+                State::Undefined => panic!("`Task::poll()` called after completion.")
+            }
+        }
+    }
+}
+
+/// Task after it has been closed.
+///
+/// The connection to the remote is potentially still going on, but no new
+/// event for this task will be received.
+pub struct ClosedTask<E, T> {
+    /// Identifier of the task that closed.
+    ///
+    /// No longer corresponds to anything, but can be reported to the user.
+    id: TaskId,
+
+    /// The channel to the task.
+    ///
+    /// The task will continue to work for as long as this channel is alive,
+    /// but events produced by it are ignored.
+    sender: mpsc::Sender<ToTaskMessage<E>>,
+
+    /// The data provided by the user.
+    user_data: T
+}
+
+impl<E, T> ClosedTask<E, T> {
+    /// Create a new `ClosedTask` value.
+    pub fn new(id: TaskId, sender: mpsc::Sender<ToTaskMessage<E>>, user_data: T) -> Self {
+        Self { id, sender, user_data }
+    }
+
+    /// Returns the task id.
+    ///
+    /// Note that this task is no longer managed and therefore calling
+    /// `Manager::task()` with this ID will fail.
+    pub fn id(&self) -> TaskId {
+        self.id
+    }
+
+    /// Returns the user data associated with the task.
+    pub fn user_data(&self) -> &T {
+        &self.user_data
+    }
+
+    /// Returns the user data associated with the task.
+    pub fn user_data_mut(&mut self) -> &mut T {
+        &mut self.user_data
+    }
+
+    /// Finish destroying the task and yield the user data.
+    /// This closes the connection to the remote.
+    pub fn into_user_data(self) -> T {
+        self.user_data
+    }
+
+    /// Deconstruct into the user data and sender.
+    pub fn into(self) -> (T, mpsc::Sender<ToTaskMessage<E>>) {
+        (self.user_data, self.sender)
+    }
+}
+
+impl<E, T: fmt::Debug> fmt::Debug for ClosedTask<E, T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_tuple("ClosedTask")
+            .field(&self.id)
+            .field(&self.user_data)
+            .finish()
+    }
+}
+

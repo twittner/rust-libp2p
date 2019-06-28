@@ -34,7 +34,7 @@ use crate::{
             HandledNodeError,
             NodeHandler
         },
-        handled_node_tasks::IntoNodeHandler,
+        handled_node::IntoNodeHandler,
         node::Substream
     },
     nodes::listeners::{ListenersEvent, ListenersStream},
@@ -44,6 +44,7 @@ use fnv::FnvHashMap;
 use futures::{prelude::*, future};
 use std::{
     collections::hash_map::{Entry, OccupiedEntry},
+    collections::VecDeque,
     error,
     fmt,
     hash::Hash,
@@ -69,6 +70,8 @@ where
 
     /// Max numer of incoming connections.
     incoming_limit: Option<u32>,
+
+    take_over_to_complete: VecDeque<TPeerId>
 }
 
 impl<TTrans, TInEvent, TOutEvent, THandler, THandlerErr, TConnInfo, TPeerId> fmt::Debug for
@@ -84,6 +87,7 @@ where
             .field("active_nodes", &self.active_nodes)
             .field("reach_attempts", &self.reach_attempts)
             .field("incoming_limit", &self.incoming_limit)
+            .field("take_over_to_complete", &self.take_over_to_complete.len())
             .finish()
     }
 }
@@ -555,7 +559,6 @@ where
     TPeerId: Eq + Hash + Clone + Send + 'static,
 {
     /// Starts processing the incoming connection and sets the handler to use for it.
-    #[inline]
     pub fn accept(self, handler: THandler) {
         self.accept_with_builder(|_| handler)
     }
@@ -592,7 +595,6 @@ impl<'a, TTrans, TInEvent, TOutEvent, THandler, THandlerErr, TConnInfo, TPeerId>
 where TTrans: Transport
 {
     /// Returns the `IncomingInfo` corresponding to this incoming connection.
-    #[inline]
     pub fn info(&self) -> IncomingInfo<'_> {
         IncomingInfo {
             listen_addr: &self.listen_addr,
@@ -601,19 +603,16 @@ where TTrans: Transport
     }
 
     /// Address of the listener that received the connection.
-    #[inline]
     pub fn listen_addr(&self) -> &Multiaddr {
         &self.listen_addr
     }
 
     /// Address used to send back data to the dialer.
-    #[inline]
     pub fn send_back_addr(&self) -> &Multiaddr {
         &self.send_back_addr
     }
 
     /// Builds the `ConnectedPoint` corresponding to the incoming connection.
-    #[inline]
     pub fn to_connected_point(&self) -> ConnectedPoint {
         self.info().to_connected_point()
     }
@@ -638,14 +637,12 @@ pub enum ConnectedPoint {
 }
 
 impl<'a> From<&'a ConnectedPoint> for Endpoint {
-    #[inline]
     fn from(endpoint: &'a ConnectedPoint) -> Endpoint {
         endpoint.to_endpoint()
     }
 }
 
 impl From<ConnectedPoint> for Endpoint {
-    #[inline]
     fn from(endpoint: ConnectedPoint) -> Endpoint {
         endpoint.to_endpoint()
     }
@@ -653,7 +650,6 @@ impl From<ConnectedPoint> for Endpoint {
 
 impl ConnectedPoint {
     /// Turns the `ConnectedPoint` into the corresponding `Endpoint`.
-    #[inline]
     pub fn to_endpoint(&self) -> Endpoint {
         match *self {
             ConnectedPoint::Dialer { .. } => Endpoint::Dialer,
@@ -662,7 +658,6 @@ impl ConnectedPoint {
     }
 
     /// Returns true if we are `Dialer`.
-    #[inline]
     pub fn is_dialer(&self) -> bool {
         match *self {
             ConnectedPoint::Dialer { .. } => true,
@@ -671,7 +666,6 @@ impl ConnectedPoint {
     }
 
     /// Returns true if we are `Listener`.
-    #[inline]
     pub fn is_listener(&self) -> bool {
         match *self {
             ConnectedPoint::Dialer { .. } => false,
@@ -691,7 +685,6 @@ pub struct IncomingInfo<'a> {
 
 impl<'a> IncomingInfo<'a> {
     /// Builds the `ConnectedPoint` corresponding to the incoming connection.
-    #[inline]
     pub fn to_connected_point(&self) -> ConnectedPoint {
         ConnectedPoint::Listener {
             listen_addr: self.listen_addr.clone(),
@@ -713,7 +706,6 @@ where
     TPeerId: Eq + Hash + Clone,
 {
     /// Creates a new node events stream.
-    #[inline]
     pub fn new(transport: TTrans, local_peer_id: TPeerId) -> Self {
         // TODO: with_capacity?
         RawSwarm {
@@ -726,11 +718,11 @@ where
                 connected_points: Default::default(),
             },
             incoming_limit: None,
+            take_over_to_complete: VecDeque::new()
         }
     }
 
     /// Creates a new node event stream with incoming connections limit.
-    #[inline]
     pub fn new_with_incoming_limit(transport: TTrans,
         local_peer_id: TPeerId, incoming_limit: Option<u32>) -> Self
     {
@@ -744,17 +736,16 @@ where
                 other_reach_attempts: Vec::new(),
                 connected_points: Default::default(),
             },
+            take_over_to_complete: VecDeque::new()
         }
     }
 
     /// Returns the transport passed when building this object.
-    #[inline]
     pub fn transport(&self) -> &TTrans {
         self.listeners.transport()
     }
 
     /// Start listening on the given multiaddress.
-    #[inline]
     pub fn listen_on(&mut self, addr: Multiaddr) -> Result<(), TransportError<TTrans::Error>> {
         self.listeners.listen_on(addr)
     }
@@ -765,7 +756,6 @@ where
     }
 
     /// Returns limit on incoming connections.
-    #[inline]
     pub fn incoming_limit(&self) -> Option<u32> {
         self.incoming_limit
     }
@@ -777,7 +767,6 @@ where
     /// example with the identify protocol.
     ///
     /// For each listener, calls `nat_traversal` with the observed address and returns the outcome.
-    #[inline]
     pub fn nat_traversal<'a>(&'a self, observed_addr: &'a Multiaddr)
         -> impl Iterator<Item = Multiaddr> + 'a
     where
@@ -790,7 +779,6 @@ where
     /// Returns the peer id of the local node.
     ///
     /// This is the same value as was passed to `new()`.
-    #[inline]
     pub fn local_peer_id(&self) -> &TPeerId {
         &self.reach_attempts.local_peer_id
     }
@@ -837,7 +825,6 @@ where
     /// We don't know anything about these connections yet, so all we can do is know how many of
     /// them we have.
     #[deprecated(note = "Use incoming_negotiated().count() instead")]
-    #[inline]
     pub fn num_incoming_negotiated(&self) -> usize {
         self.reach_attempts.other_reach_attempts
             .iter()
@@ -847,7 +834,6 @@ where
 
     /// Returns the list of incoming connections that are currently in the process of being
     /// negotiated. We don't know the `PeerId` of these nodes yet.
-    #[inline]
     pub fn incoming_negotiated(&self) -> impl Iterator<Item = IncomingInfo<'_>> {
         self.reach_attempts
             .other_reach_attempts
@@ -863,11 +849,13 @@ where
     }
 
     /// Sends an event to all nodes.
-    #[inline]
-    pub fn broadcast_event(&mut self, event: &TInEvent)
-    where TInEvent: Clone,
-    {
-        self.active_nodes.broadcast_event(event)
+    pub fn start_broadcast(&mut self, event: &TInEvent) where TInEvent: Clone {
+        self.active_nodes.start_broadcast(event)
+    }
+
+    #[must_use]
+    pub fn complete_broadcast(&mut self) -> Poll<(), ()> {
+        self.active_nodes.complete_broadcast()
     }
 
     /// Returns a list of all the peers we are currently connected to.
@@ -905,7 +893,6 @@ where
     }
 
     /// Grants access to a struct that represents a peer.
-    #[inline]
     pub fn peer(&mut self, peer_id: TPeerId) -> Peer<'_, TTrans, TInEvent, TOutEvent, THandler, THandlerErr, TConnInfo, TPeerId> {
         if peer_id == self.reach_attempts.local_peer_id {
             return Peer::LocalNode;
@@ -1096,7 +1083,26 @@ where
                          interrupt or when a reach attempt succeeds or errors; therefore the \
                          out_reach_attempts should always be in sync with the actual \
                          attempts; QED");
-            self.active_nodes.peer_mut(&peer_id).unwrap().take_over(interrupted);
+            let mut peer = self.active_nodes.peer_mut(&peer_id).unwrap();
+            peer.start_take_over(interrupted);
+            if let Ok(Async::NotReady) = peer.complete_take_over() {
+                if !self.take_over_to_complete.contains(&peer_id) {
+                    self.take_over_to_complete.push_back(peer_id)
+                }
+                return Async::NotReady
+            }
+        }
+
+        let mut remaining = self.take_over_to_complete.len();
+        while let Some(id) = self.take_over_to_complete.pop_front() {
+            let peer = self.active_nodes.peer_mut(&id);
+            if let Some(Async::NotReady) = peer.and_then(|mut p| p.complete_take_over().ok()) {
+                self.take_over_to_complete.push_back(id)
+            }
+            remaining -= 1;
+            if remaining == 0 {
+                break
+            }
         }
 
         Async::Ready(out_event)
@@ -1268,7 +1274,6 @@ where
 ///
 /// This means that if `local` and `other` both dial each other, the connection from `local` should
 /// be kept and the one from `other` will be dropped.
-#[inline]
 fn has_dial_prio<TPeerId>(local: &TPeerId, other: &TPeerId) -> bool
 where
     TPeerId: AsRef<[u8]>,
@@ -1473,7 +1478,6 @@ where
     TPeerId: Eq + Hash + Clone + Send + 'static,
 {
     /// If we are connected, returns the `PeerConnected`.
-    #[inline]
     pub fn into_connected(self) -> Option<PeerConnected<'a, TTrans, TInEvent, TOutEvent, THandler, THandlerErr, TConnInfo, TPeerId>> {
         match self {
             Peer::Connected(peer) => Some(peer),
@@ -1482,7 +1486,6 @@ where
     }
 
     /// If a connection is pending, returns the `PeerPendingConnect`.
-    #[inline]
     pub fn into_pending_connect(self) -> Option<PeerPendingConnect<'a, TTrans, TInEvent, TOutEvent, THandler, THandlerErr, TConnInfo, TPeerId>> {
         match self {
             Peer::PendingConnect(peer) => Some(peer),
@@ -1491,7 +1494,6 @@ where
     }
 
     /// If we are not connected, returns the `PeerNotConnected`.
-    #[inline]
     pub fn into_not_connected(self) -> Option<PeerNotConnected<'a, TTrans, TInEvent, TOutEvent, THandler, THandlerErr, TConnInfo, TPeerId>> {
         match self {
             Peer::NotConnected(peer) => Some(peer),
@@ -1505,7 +1507,6 @@ where
     /// the whole connection is immediately closed.
     ///
     /// Returns an error if we are `LocalNode`.
-    #[inline]
     pub fn or_connect(self, addr: Multiaddr, handler: THandler)
         -> Result<PeerPotentialConnect<'a, TTrans, TInEvent, TOutEvent, THandler, THandlerErr, TConnInfo, TPeerId>, Self>
     {
@@ -1519,7 +1520,6 @@ where
     /// the whole connection is immediately closed.
     ///
     /// Returns an error if we are `LocalNode`.
-    #[inline]
     pub fn or_connect_with<TFn>(self, addr: TFn, handler: THandler)
         -> Result<PeerPotentialConnect<'a, TTrans, TInEvent, TOutEvent, THandler, THandlerErr, TConnInfo, TPeerId>, Self>
     where
@@ -1558,7 +1558,6 @@ where
 {
     /// Closes the connection or the connection attempt.
     // TODO: consider returning a `PeerNotConnected`
-    #[inline]
     pub fn close(self) {
         match self {
             PeerPotentialConnect::Connected(peer) => peer.close(),
@@ -1567,7 +1566,6 @@ where
     }
 
     /// If we are connected, returns the `PeerConnected`.
-    #[inline]
     pub fn into_connected(self) -> Option<PeerConnected<'a, TTrans, TInEvent, TOutEvent, THandler, THandlerErr, TConnInfo, TPeerId>> {
         match self {
             PeerPotentialConnect::Connected(peer) => Some(peer),
@@ -1576,7 +1574,6 @@ where
     }
 
     /// If a connection is pending, returns the `PeerPendingConnect`.
-    #[inline]
     pub fn into_pending_connect(self) -> Option<PeerPendingConnect<'a, TTrans, TInEvent, TOutEvent, THandler, THandlerErr, TConnInfo, TPeerId>> {
         match self {
             PeerPotentialConnect::PendingConnect(peer) => Some(peer),
@@ -1645,11 +1642,16 @@ where
     }
 
     /// Sends an event to the node.
-    #[inline]
-    pub fn send_event(&mut self, event: TInEvent) {
+    pub fn start_send_event(&mut self, event: TInEvent) {
         self.active_nodes.peer_mut(&self.peer_id)
             .expect("A PeerConnected is always created with a PeerId in active_nodes; QED")
-            .send_event(event)
+            .start_send_event(event)
+    }
+
+    pub fn complete_send_event(&mut self) -> Poll<(), ()> {
+        self.active_nodes.peer_mut(&self.peer_id)
+            .expect("A PeerConnected is always created with a PeerId in active_nodes; QED")
+            .complete_send_event()
     }
 }
 
@@ -1673,7 +1675,6 @@ where
     /// Interrupt this connection attempt.
     // TODO: consider returning a PeerNotConnected; however that is really pain in terms of
     // borrows
-    #[inline]
     pub fn interrupt(self) {
         let attempt = self.attempt.remove();
         if self.active_nodes.interrupt(attempt.id).is_err() {
@@ -1687,13 +1688,11 @@ where
     }
 
     /// Returns the multiaddress we're currently trying to dial.
-    #[inline]
     pub fn attempted_multiaddr(&self) -> &Multiaddr {
         &self.attempt.get().cur_attempted
     }
 
     /// Returns a list of the multiaddresses we're going to try if the current dialing fails.
-    #[inline]
     pub fn pending_multiaddrs(&self) -> impl Iterator<Item = &Multiaddr> {
         self.attempt.get().next_attempts.iter()
     }
@@ -1761,7 +1760,6 @@ where
     ///
     /// If we reach a peer but the `PeerId` doesn't correspond to the one we're expecting, then
     /// the whole connection is immediately closed.
-    #[inline]
     pub fn connect(self, addr: Multiaddr, handler: THandler)
         -> PeerPendingConnect<'a, TTrans, TInEvent, TOutEvent, THandler, THandlerErr, TConnInfo, TPeerId>
     where
@@ -1779,7 +1777,6 @@ where
     ///
     /// If we reach a peer but the `PeerId` doesn't correspond to the one we're expecting, then
     /// the whole connection is immediately closed.
-    #[inline]
     pub fn connect_iter<TIter>(self, addrs: TIter, handler: THandler)
         -> Result<PeerPendingConnect<'a, TTrans, TInEvent, TOutEvent, THandler, THandlerErr, TConnInfo, TPeerId>, Self>
     where

@@ -129,7 +129,7 @@ fn broadcasted_events_reach_active_nodes() {
     let dial_result = swarm.dial(addr, handler);
     assert!(dial_result.is_ok());
 
-    swarm.broadcast_event(&InEvent::NextState);
+    swarm.start_broadcast(&InEvent::NextState);
     let swarm = Arc::new(Mutex::new(swarm));
     let mut rt = Runtime::new().unwrap();
     let mut peer_id : Option<PeerId> = None;
@@ -137,6 +137,9 @@ fn broadcasted_events_reach_active_nodes() {
         let swarm_fut = swarm.clone();
         peer_id = rt.block_on(future::poll_fn(move || -> Poll<Option<PeerId>, ()> {
             let mut swarm = swarm_fut.lock();
+            if let Ok(Async::NotReady) = swarm.complete_broadcast() {
+                return Ok(Async::NotReady)
+            }
             let poll_res = swarm.poll();
             match poll_res {
                 Async::Ready(RawSwarmEvent::Connected { conn_info, .. }) => Ok(Async::Ready(Some(conn_info))),
@@ -331,10 +334,13 @@ fn yields_node_error_when_there_is_an_error_after_successful_connect() {
     let mut keep_polling = true;
     while keep_polling {
         let swarm_fut = swarm.clone();
+        swarm.lock().start_broadcast(&InEvent::NextState);
         keep_polling = rt.block_on(future::poll_fn(move || -> Poll<_, ()> {
             let mut swarm = swarm_fut.lock();
             // Push the Handler into an error state on the next poll
-            swarm.broadcast_event(&InEvent::NextState);
+            if let Ok(Async::NotReady) = swarm.complete_broadcast() {
+                return Ok(Async::NotReady)
+            }
             match swarm.poll() {
                 Async::NotReady => Ok(Async::Ready(true)),
                 Async::Ready(event) => {

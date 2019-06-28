@@ -34,7 +34,7 @@ use crate::{
 use futures::prelude::*;
 use smallvec::SmallVec;
 use std::{error, fmt, io, ops::{Deref, DerefMut}};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 /// Contains the state of the network, plus the way it should behave.
 pub type Swarm<TTransport, TBehaviour, TConnInfo = PeerId> = ExpandedSwarm<
@@ -78,6 +78,8 @@ where
 
     /// List of nodes for which we deny any incoming connection.
     banned_peers: HashSet<PeerId>,
+
+    send_events_to_complete: VecDeque<PeerId>
 }
 
 impl<TTransport, TBehaviour, TInEvent, TOutEvent, THandler, THandlerErr, TConnInfo> Deref for
@@ -347,8 +349,13 @@ where TBehaviour: NetworkBehaviour<ProtocolsHandler = THandler>,
                     }
                 },
                 Async::Ready(NetworkBehaviourAction::SendEvent { peer_id, event }) => {
-                    if let Some(mut peer) = self.raw_swarm.peer(peer_id).into_connected() {
-                        peer.send_event(event);
+                    if let Some(mut peer) = self.raw_swarm.peer(peer_id.clone()).into_connected() {
+                        peer.start_send_event(event);
+                        if let Ok(Async::NotReady) = peer.complete_send_event() {
+                            if !self.send_events_to_complete.contains(&peer_id) {
+                                self.send_events_to_complete.push_back(peer_id)
+                            }
+                        }
                     }
                 },
                 Async::Ready(NetworkBehaviourAction::ReportObservedAddr { address }) => {
@@ -359,6 +366,18 @@ where TBehaviour: NetworkBehaviour<ProtocolsHandler = THandler>,
                         self.external_addrs.add(addr)
                     }
                 },
+            }
+
+            let mut remaining = self.send_events_to_complete.len();
+            while let Some(id) = self.send_events_to_complete.pop_front() {
+                let peer = self.raw_swarm.peer(id.clone()).into_connected();
+                if let Some(Async::NotReady) = peer.and_then(|mut p| p.complete_send_event().ok()) {
+                    self.send_events_to_complete.push_back(id)
+                }
+                remaining -= 1;
+                if remaining == 0 {
+                    break
+                }
             }
         }
     }
@@ -465,6 +484,7 @@ where TBehaviour: NetworkBehaviour,
             listened_addrs: SmallVec::new(),
             external_addrs: Addresses::default(),
             banned_peers: HashSet::new(),
+            send_events_to_complete: VecDeque::new()
         }
     }
 }
