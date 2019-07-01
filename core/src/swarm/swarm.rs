@@ -322,6 +322,21 @@ where TBehaviour: NetworkBehaviour<ProtocolsHandler = THandler>,
                 },
             }
 
+            let mut remaining = self.send_events_to_complete.len();
+            while let Some(id) = self.send_events_to_complete.pop_front() {
+                let peer = self.raw_swarm.peer(id.clone()).into_connected();
+                if let Some(Async::NotReady) = peer.and_then(|mut p| p.complete_send_event().ok()) {
+                    self.send_events_to_complete.push_back(id)
+                }
+                remaining -= 1;
+                if remaining == 0 {
+                    break
+                }
+            }
+            if !self.send_events_to_complete.is_empty() {
+                return Ok(Async::NotReady)
+            }
+
             let behaviour_poll = {
                 let mut parameters = SwarmPollParameters {
                     local_peer_id: &mut self.raw_swarm.local_peer_id(),
@@ -366,18 +381,6 @@ where TBehaviour: NetworkBehaviour<ProtocolsHandler = THandler>,
                         self.external_addrs.add(addr)
                     }
                 },
-            }
-
-            let mut remaining = self.send_events_to_complete.len();
-            while let Some(id) = self.send_events_to_complete.pop_front() {
-                let peer = self.raw_swarm.peer(id.clone()).into_connected();
-                if let Some(Async::NotReady) = peer.and_then(|mut p| p.complete_send_event().ok()) {
-                    self.send_events_to_complete.push_back(id)
-                }
-                remaining -= 1;
-                if remaining == 0 {
-                    break
-                }
             }
         }
     }

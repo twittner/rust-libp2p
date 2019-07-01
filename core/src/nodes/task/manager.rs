@@ -52,10 +52,16 @@ use super::{ClosedTask, TaskId, task::{Task, FromTaskMessage, ToTaskMessage}, Er
 // the user's code. See similar comments in the documentation of `NodeStream`.
 //
 
+/// Internal entry of the `Manager`'s task table.
+///
+/// Contains the sender to deliver event messages to the task,
+/// the associated user data and a pending message if any,
+/// meant to be delivered to the task via the sender.
 struct TaskEntry<I, T> {
     sender: mpsc::Sender<ToTaskMessage<I>>,
     user_data: T,
-    pending_send: Option<AsyncSink<ToTaskMessage<I>>>
+    pending_send: Option<AsyncSink<ToTaskMessage<I>>>,
+    pending_broadcast: Option<AsyncSink<ToTaskMessage<I>>>
 }
 
 /// Implementation of [`Stream`] that handles a collection of nodes.
@@ -131,9 +137,9 @@ pub enum Event<'a, I, O, H, E, HE, T, C = PeerId> {
 }
 
 impl<I, O, H, E, HE, T, C> Manager<I, O, H, E, HE, T, C> {
-    /// Creates a new empty collection.
+    /// Creates a new task manager.
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel(2);
+        let (tx, rx) = mpsc::channel(1);
         Self {
             tasks: FnvHashMap::default(),
             next_task_id: TaskId(0),
@@ -144,7 +150,7 @@ impl<I, O, H, E, HE, T, C> Manager<I, O, H, E, HE, T, C> {
         }
     }
 
-    /// Adds to the collection a future that tries to reach a node.
+    /// Adds to the manager a future that tries to reach a node.
     ///
     /// This method spawns a task dedicated to resolving this future and
     /// processing the node's events.
@@ -165,8 +171,13 @@ impl<I, O, H, E, HE, T, C> Manager<I, O, H, E, HE, T, C> {
         let task_id = self.next_task_id;
         self.next_task_id.0 += 1;
 
-        let (tx, rx) = mpsc::channel(2);
-        self.tasks.insert(task_id, TaskEntry { sender: tx, user_data, pending_send: None });
+        let (tx, rx) = mpsc::channel(1);
+        self.tasks.insert(task_id, TaskEntry {
+            sender: tx,
+            user_data,
+            pending_send: None,
+            pending_broadcast: None
+        });
 
         let task = Box::new(Task::new(task_id, self.events_tx.clone(), rx, future, handler));
         self.to_spawn.push(task);
@@ -195,8 +206,13 @@ impl<I, O, H, E, HE, T, C> Manager<I, O, H, E, HE, T, C> {
         let task_id = self.next_task_id;
         self.next_task_id.0 += 1;
 
-        let (tx, rx) = mpsc::channel(2);
-        self.tasks.insert(task_id, TaskEntry { sender: tx, user_data, pending_send: None });
+        let (tx, rx) = mpsc::channel(1);
+        self.tasks.insert(task_id, TaskEntry {
+            sender: tx,
+            user_data,
+            pending_send: None,
+            pending_broadcast: None
+        });
 
         let task: Task<futures::future::Empty<_, _>, _, _, _, _, _, _> =
             Task::node(task_id, self.events_tx.clone(), rx, HandledNode::new(muxer, handler));
@@ -206,32 +222,37 @@ impl<I, O, H, E, HE, T, C> Manager<I, O, H, E, HE, T, C> {
     }
 
     /// Start sending an event to all the tasks, including the pending ones.
+    ///
+    /// After starting a broadcast make sure to finish it with `complete_broadcast`,
+    /// otherwise starting another broadcast or sending an event directly to a
+    /// task would overwrite the pending broadcast.
     pub fn start_broadcast(&mut self, event: &I) where I: Clone {
         for task in self.tasks.values_mut() {
-            task.pending_send = Some(AsyncSink::NotReady(ToTaskMessage::HandlerEvent(event.clone())))
+            let msg = ToTaskMessage::HandlerEvent(event.clone());
+            task.pending_broadcast = Some(AsyncSink::NotReady(msg))
         }
     }
 
     /// Complete a started broadcast.
     pub fn complete_broadcast(&mut self) -> Poll<(), ()> {
         for task in self.tasks.values_mut() {
-            match task.pending_send.take() {
+            match task.pending_broadcast.take() {
                 Some(AsyncSink::NotReady(msg)) =>
                     match task.sender.start_send(msg) {
                         Ok(AsyncSink::NotReady(msg)) => {
-                            task.pending_send = Some(AsyncSink::NotReady(msg));
+                            task.pending_broadcast = Some(AsyncSink::NotReady(msg));
                             return Ok(Async::NotReady)
                         }
                         Ok(AsyncSink::Ready) =>
                             if let Ok(Async::NotReady) = task.sender.poll_complete() {
-                                task.pending_send = Some(AsyncSink::Ready);
+                                task.pending_broadcast = Some(AsyncSink::Ready);
                                 return Ok(Async::NotReady)
                             }
                         Err(_) => {}
                     }
                 Some(AsyncSink::Ready) =>
                     if let Ok(Async::NotReady) = task.sender.poll_complete() {
-                        task.pending_send = Some(AsyncSink::Ready);
+                        task.pending_broadcast = Some(AsyncSink::Ready);
                         return Ok(Async::NotReady)
                     }
                 None => {}
@@ -331,11 +352,16 @@ pub struct TaskEntryRef<'a, E, T> {
 }
 
 impl<'a, E, T> TaskEntryRef<'a, E, T> {
-    /// Sends an event to the given node.
+    /// Begin sending an event to the given node.
+    ///
+    /// Make sure to finish the send operation with `complete_send_event`,
+    /// otherwise interleaved sends or broadcast may interfere with each
+    /// other, resulting in lost events.
     pub fn start_send_event(&mut self, event: E) {
         self.start_send_event_msg(ToTaskMessage::HandlerEvent(event))
     }
 
+    /// Finish a send operation started with `start_send_event`.
     pub fn complete_send_event(&mut self) -> Poll<(), ()> {
         self.complete_send_event_msg()
     }
@@ -365,8 +391,11 @@ impl<'a, E, T> TaskEntryRef<'a, E, T> {
         ClosedTask::new(id, task.sender, task.user_data)
     }
 
-    /// Gives ownership of a closed task. As soon as our task (`self`) has some acknowledgment from
-    /// the remote that its connection is alive, it will close the connection with `other`.
+    /// Gives ownership of a closed task.
+    /// As soon as our task (`self`) has some acknowledgment from the remote
+    /// that its connection is alive, it will close the connection with `other`.
+    ///
+    /// Make sure to complete this operation with `complete_take_over`.
     pub fn start_take_over(&mut self, other: ClosedTask<E, T>) -> T {
         // It is possible that the sender is closed if the background task has already finished
         // but the local state hasn't been updated yet because we haven't been polled in the
@@ -376,6 +405,7 @@ impl<'a, E, T> TaskEntryRef<'a, E, T> {
         user_data
     }
 
+    /// Finish take over started by `start_take_over`.
     pub fn complete_take_over(&mut self) -> Poll<(), ()> {
         self.complete_send_event_msg()
     }

@@ -1031,6 +1031,21 @@ where
             }
         }
 
+        let mut remaining = self.take_over_to_complete.len();
+        while let Some(id) = self.take_over_to_complete.pop_front() {
+            let peer = self.active_nodes.peer_mut(&id);
+            if let Some(Async::NotReady) = peer.and_then(|mut p| p.complete_take_over().ok()) {
+                self.take_over_to_complete.push_back(id)
+            }
+            remaining -= 1;
+            if remaining == 0 {
+                break
+            }
+        }
+        if !self.take_over_to_complete.is_empty() {
+            return Async::NotReady
+        }
+
         // Poll the existing nodes.
         let (action, out_event);
         match self.active_nodes.poll() {
@@ -1090,18 +1105,6 @@ where
                     self.take_over_to_complete.push_back(peer_id)
                 }
                 return Async::NotReady
-            }
-        }
-
-        let mut remaining = self.take_over_to_complete.len();
-        while let Some(id) = self.take_over_to_complete.pop_front() {
-            let peer = self.active_nodes.peer_mut(&id);
-            if let Some(Async::NotReady) = peer.and_then(|mut p| p.complete_take_over().ok()) {
-                self.take_over_to_complete.push_back(id)
-            }
-            remaining -= 1;
-            if remaining == 0 {
-                break
             }
         }
 
