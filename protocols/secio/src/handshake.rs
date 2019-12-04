@@ -31,9 +31,23 @@ use protobuf::Message as ProtobufMessage;
 use rand::{self, RngCore};
 use sha2::{Digest as ShaDigestTrait, Sha256};
 use std::cmp::{self, Ordering};
-use std::io::{Error as IoError, ErrorKind as IoErrorKind};
+use std::io::{self, Error as IoError, ErrorKind as IoErrorKind};
 use crate::structs_proto::{Exchange, Propose};
 use crate::SecioConfig;
+
+async fn send<T: AsyncWrite + Unpin>(socket: &mut T, data: &[u8]) -> io::Result<()> {
+    socket.write_all(&(data.len() as u32).to_be_bytes()).await?;
+    socket.write_all(data).await
+}
+
+async fn recv<T: AsyncRead + Unpin>(socket: &mut T) -> io::Result<Vec<u8>> {
+    let mut len = [0; 4];
+    socket.read_exact(&mut len).await?;
+    let n = u32::from_be_bytes(len);
+    let mut v = vec![0; n as usize];
+    socket.read_exact(&mut v).await?;
+    Ok(v)
+}
 
 /// Performs a handshake on the given socket.
 ///
@@ -44,17 +58,10 @@ use crate::SecioConfig;
 /// On success, returns an object that implements the `Sink` and `Stream` trait whose items are
 /// buffers of data, plus the public key of the remote, plus the ephemeral public key used during
 /// negotiation.
-pub async fn handshake<'a, S: 'a>(socket: S, config: SecioConfig)
-    -> Result<(FullCodec<S>, PublicKey, Vec<u8>), SecioError>
+pub async fn handshake<'a, S>(mut socket: S, config: SecioConfig) -> Result<(FullCodec<S>, PublicKey, Vec<u8>), SecioError>
 where
-    S: AsyncRead + AsyncWrite + Send + Unpin,
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'a
 {
-    // The handshake messages all start with a variable-length integer indicating the size.
-    let mut socket = futures_codec::Framed::new(
-        socket,
-        unsigned_varint::codec::UviBytes::<Vec<u8>>::default()
-    );
-
     let local_nonce = {
         let mut local_nonce = [0; 16];
         rand::thread_rng()
@@ -98,17 +105,10 @@ where
     trace!("starting handshake; local nonce = {:?}", local_nonce);
 
     trace!("sending proposition to remote");
-    socket.send(local_proposition_bytes.clone()).await?;
+    send(&mut socket, &local_proposition_bytes).await?;
 
     // Receive the remote's proposition.
-    let remote_proposition_bytes = match socket.next().await {
-        Some(b) => b?,
-        None => {
-            let err = IoError::new(IoErrorKind::BrokenPipe, "unexpected eof");
-            debug!("unexpected eof while waiting for remote's proposition");
-            return Err(err.into())
-        },
-    };
+    let remote_proposition_bytes = recv(&mut socket).await?;
 
     let mut remote_proposition = match protobuf_parse_from_bytes::<Propose>(&remote_proposition_bytes) {
         Ok(prop) => prop,
@@ -221,19 +221,11 @@ where
 
     // Send our local `Exchange`.
     trace!("sending exchange to remote");
-    socket.send(local_exch).await?;
+    send(&mut socket, &local_exch).await?;
 
     // Receive the remote's `Exchange`.
     let remote_exch = {
-        let raw = match socket.next().await {
-            Some(r) => r?,
-            None => {
-                let err = IoError::new(IoErrorKind::BrokenPipe, "unexpected eof");
-                debug!("unexpected eof while waiting for remote's exchange");
-                return Err(err.into())
-            },
-        };
-
+        let raw = recv(&mut socket).await?;
         match protobuf_parse_from_bytes::<Exchange>(&raw) {
             Ok(e) => {
                 trace!("received and decoded the remote's exchange");
@@ -304,7 +296,7 @@ where
         };
 
         full_codec(
-            socket,
+            futures_codec::Framed::new(socket, unsigned_varint::codec::UviBytes::<Vec<u8>>::default()),
             encoding_cipher,
             encoding_hmac,
             decoding_cipher,
