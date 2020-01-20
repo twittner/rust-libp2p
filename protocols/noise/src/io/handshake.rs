@@ -311,7 +311,9 @@ impl<T> State<T>
                 Ok(dh_pk) => Some(dh_pk)
             }
         };
-        match self.io.session.into_transport_mode() {
+
+        let mut io = self.io;
+        match io.take_session().into_transport_mode() {
             Err(e) => Err(e.into()),
             Ok(s) => {
                 let remote = match (self.id_remote_pubkey, dh_remote_pubkey) {
@@ -325,7 +327,8 @@ impl<T> State<T>
                         }
                     }
                 };
-                Ok((remote, NoiseOutput { session: SnowState::Transport(s), .. self.io }))
+                io.set_session(SnowState::Transport(s));
+                Ok((remote, io))
             }
         }
     }

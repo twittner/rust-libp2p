@@ -26,7 +26,9 @@ use futures::ready;
 use futures::prelude::*;
 use log::{debug, trace};
 use snow;
-use std::{fmt, io, pin::Pin, ops::DerefMut, task::{Context, Poll}};
+use std::{fmt, io, pin::Pin, ops::DerefMut, sync::atomic::AtomicUsize, task::{Context, Poll}};
+
+static OUTPUT_INSTANCES: AtomicUsize = AtomicUsize::new(0);
 
 const MAX_NOISE_PKG_LEN: usize = 65535;
 const MAX_WRITE_BUF_LEN: usize = 16384;
@@ -57,6 +59,7 @@ impl Buffer {
 
 /// A passthrough enum for the two kinds of state machines in `snow`
 pub(crate) enum SnowState {
+    Empty,
     Transport(snow::TransportState),
     Handshake(snow::HandshakeState)
 }
@@ -66,6 +69,7 @@ impl SnowState {
         match self {
             SnowState::Handshake(session) => session.read_message(message, payload),
             SnowState::Transport(session) => session.read_message(message, payload),
+            SnowState::Empty => unreachable!()
         }
     }
 
@@ -73,6 +77,7 @@ impl SnowState {
         match self {
             SnowState::Handshake(session) => session.write_message(message, payload),
             SnowState::Transport(session) => session.write_message(message, payload),
+            SnowState::Empty => unreachable!()
         }
     }
 
@@ -80,6 +85,7 @@ impl SnowState {
         match self {
             SnowState::Handshake(session) => session.get_remote_static(),
             SnowState::Transport(session) => session.get_remote_static(),
+            SnowState::Empty => unreachable!()
         }
     }
 
@@ -87,6 +93,7 @@ impl SnowState {
         match self {
             SnowState::Handshake(session) => session.into_transport_mode(),
             SnowState::Transport(_) => Err(snow::Error::State(snow::error::StateProblem::HandshakeAlreadyFinished)),
+            SnowState::Empty => unreachable!()
         }
     }
 }
@@ -113,6 +120,8 @@ impl<T> fmt::Debug for NoiseOutput<T> {
 
 impl<T> NoiseOutput<T> {
     fn new(io: T, session: SnowState) -> Self {
+        let n = OUTPUT_INSTANCES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        log::info!("NoiseOutput instances = {}", n + 1);
         NoiseOutput {
             io,
             session,
@@ -120,6 +129,21 @@ impl<T> NoiseOutput<T> {
             read_state: ReadState::Init,
             write_state: WriteState::Init
         }
+    }
+
+    pub(crate) fn set_session(&mut self, s: SnowState) {
+        self.session = s
+    }
+
+    pub(crate) fn take_session(&mut self) -> SnowState {
+        std::mem::replace(&mut self.session, SnowState::Empty)
+    }
+}
+
+impl<T> Drop for NoiseOutput<T> {
+    fn drop(&mut self) {
+        let n = OUTPUT_INSTANCES.fetch_sub(1, std::sync::atomic::Ordering::Acquire);
+        log::info!("NoiseOutput instances = {}", n - 1);
     }
 }
 
@@ -164,7 +188,7 @@ impl<T: AsyncRead + Unpin> AsyncRead for NoiseOutput<T> {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<usize, std::io::Error>> {
-        let mut this = self.deref_mut();
+        let this = self.deref_mut();
 
         let buffer = this.buffer.borrow_mut();
 
@@ -260,7 +284,7 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for NoiseOutput<T> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, std::io::Error>>{
-        let mut this = self.deref_mut();
+        let this = self.deref_mut();
 
         let buffer = this.buffer.borrow_mut();
 
@@ -347,7 +371,7 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for NoiseOutput<T> {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>
     ) -> Poll<Result<(), std::io::Error>> {
-        let mut this = self.deref_mut();
+        let this = self.deref_mut();
 
         let buffer = this.buffer.borrow_mut();
 
