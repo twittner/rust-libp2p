@@ -23,8 +23,8 @@ use crate::kbucket::{Key, KeyBytes};
 use libp2p_core::PeerId;
 use std::{
     collections::HashMap,
-    iter::{Cycle, Map, Peekable},
-    ops::{Add, Index, IndexMut, Range},
+    iter::{Cycle, Peekable},
+    ops::Range,
 };
 use wasm_timer::Instant;
 
@@ -38,7 +38,7 @@ pub struct ClosestDisjointPeersIter {
     iters: Vec<ClosestPeersIter>,
     /// Order in which to query the iterators ensuring fairness across
     /// [`ClosestPeersIter::next`] calls.
-    iter_order: Cycle<Map<Range<usize>, fn(usize) -> IteratorIndex>>,
+    iter_order: Cycle<Range<usize>>,
 
     /// Mapping of contacted peers by their [`PeerId`] to [`PeerState`]
     /// containing the corresponding iterator indices as well as the response
@@ -88,7 +88,7 @@ impl ClosestDisjointPeersIter {
             config,
             target: target.into(),
             iters,
-            iter_order: (0..iters_len).map(IteratorIndex as fn(usize) -> IteratorIndex).cycle(),
+            iter_order: (0..iters_len).cycle(),
             contacted_peers: HashMap::new(),
         }
     }
@@ -319,58 +319,20 @@ impl ClosestDisjointPeersIter {
     }
 }
 
-/// Index into the [`ClosestDisjointPeersIter`] `iters` vector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct IteratorIndex(usize);
-
-impl From<usize> for IteratorIndex {
-    fn from(i: usize) -> Self {
-        IteratorIndex(i)
-    }
-}
-
-impl From<IteratorIndex> for usize {
-    fn from(i: IteratorIndex) -> Self {
-        i.0
-    }
-}
-
-impl Add<usize> for IteratorIndex {
-    type Output = Self;
-
-    fn add(self, rhs: usize) -> Self::Output {
-        (self.0 + rhs).into()
-    }
-}
-
-impl Index<IteratorIndex> for Vec<ClosestPeersIter> {
-    type Output = ClosestPeersIter;
-
-    fn index(&self, index: IteratorIndex) -> &Self::Output {
-        &self[index.0]
-    }
-}
-
-impl IndexMut<IteratorIndex> for Vec<ClosestPeersIter> {
-    fn index_mut(&mut self, index: IteratorIndex) -> &mut Self::Output {
-        &mut self[index.0]
-    }
-}
-
 /// State tracking the iterator that yielded (i.e. tried to contact) a peer. See
 /// [`ClosestDisjointPeersIter::on_success`] for details.
 #[derive(Debug, PartialEq, Eq)]
 struct PeerState {
     /// First iterator to yield the peer. Will be notified both of the outcome
     /// (success/failure) as well as the closer peers.
-    initiated_by: IteratorIndex,
+    initiated_by: usize,
     /// Keeping track of the response state. In case other iterators later on
     /// yield the same peer, they can be notified of the response outcome.
     response: ResponseState,
 }
 
 impl PeerState {
-    fn new(initiated_by: IteratorIndex) -> Self {
+    fn new(initiated_by: usize) -> Self {
         PeerState {
             initiated_by,
             response: ResponseState::Waiting,
@@ -977,14 +939,14 @@ mod tests {
         // Expect peer to be marked as succeeded.
         assert!(iter.on_success(&peer, iter::empty()));
         assert_eq!(iter.contacted_peers.get(&peer), Some(&PeerState {
-            initiated_by: IteratorIndex(0),
+            initiated_by: 0,
             response: ResponseState::Succeeded,
         }));
 
         // Expect peer to stay marked as succeeded.
         assert!(!iter.on_failure(&peer));
         assert_eq!(iter.contacted_peers.get(&peer), Some(&PeerState {
-            initiated_by: IteratorIndex(0),
+            initiated_by: 0,
             response: ResponseState::Succeeded,
         }));
     }
