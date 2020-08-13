@@ -18,9 +18,12 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+pub mod header;
+
 pub use libp2p_core::ProtocolName;
 
 use async_trait::async_trait;
+use bytes::{Bytes, BytesMut};
 use futures::prelude::*;
 use std::io;
 
@@ -64,3 +67,21 @@ pub trait RequestResponseCodec {
     where
         T: AsyncWrite + Unpin + Send;
 }
+
+#[derive(Debug, Clone)]
+pub struct ProtocolWrapper<P>(P, Bytes);
+
+impl<P: ProtocolName> ProtocolWrapper<P> {
+    pub fn v1(p: P) -> Self {
+        let mut full = BytesMut::from(b"/request-response/1".as_ref());
+        full.extend_from_slice(p.protocol_name());
+        ProtocolWrapper(p, full.freeze())
+    }
+}
+
+impl<P> ProtocolName for ProtocolWrapper<P> {
+    fn protocol_name(&self) -> &[u8] {
+        self.1.as_ref()
+    }
+}
+

@@ -69,10 +69,11 @@
 //! on the substreams.
 
 pub mod codec;
+pub mod dynamic;
 pub mod handler;
 pub mod throttled;
 
-pub use codec::{RequestResponseCodec, ProtocolName};
+pub use codec::{RequestResponseCodec, ProtocolName, ProtocolWrapper};
 pub use handler::ProtocolSupport;
 pub use throttled::Throttled;
 
@@ -107,7 +108,7 @@ use std::{
 
 /// An inbound request or response.
 #[derive(Debug)]
-pub enum RequestResponseMessage<TRequest, TResponse> {
+pub enum RequestResponseMessage<TRequest, TResponse, TChannelResponse = TResponse> {
     /// A request message.
     Request {
         /// The ID of this request.
@@ -117,7 +118,7 @@ pub enum RequestResponseMessage<TRequest, TResponse> {
         /// The sender of the request who is awaiting a response.
         ///
         /// See [`RequestResponse::send_response`].
-        channel: ResponseChannel<TResponse>,
+        channel: ResponseChannel<TChannelResponse>,
     },
     /// A response message.
     Response {
@@ -132,13 +133,13 @@ pub enum RequestResponseMessage<TRequest, TResponse> {
 
 /// The events emitted by a [`RequestResponse`] protocol.
 #[derive(Debug)]
-pub enum RequestResponseEvent<TRequest, TResponse> {
+pub enum RequestResponseEvent<TRequest, TResponse, TChannelResponse = TResponse> {
     /// An incoming message (request or response).
     Message {
         /// The peer who sent the message.
         peer: PeerId,
         /// The incoming message.
-        message: RequestResponseMessage<TRequest, TResponse>
+        message: RequestResponseMessage<TRequest, TResponse, TChannelResponse>
     },
     /// An outbound request failed.
     OutboundFailure {
