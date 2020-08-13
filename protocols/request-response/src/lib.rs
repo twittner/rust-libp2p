@@ -57,10 +57,12 @@
 //! on the substreams.
 
 pub mod codec;
+pub mod dynamic;
 pub mod handler;
 pub mod throttled;
 
 pub use codec::{RequestResponseCodec, ProtocolName};
+pub use dynamic::Dynamic;
 pub use handler::ProtocolSupport;
 pub use throttled::Throttled;
 
@@ -95,7 +97,7 @@ use std::{
 
 /// An inbound request or response.
 #[derive(Debug)]
-pub enum RequestResponseMessage<TRequest, TResponse> {
+pub enum RequestResponseMessage<TRequest, TResponse, TChannelResponse = TResponse> {
     /// A request message.
     Request {
         /// The ID of this request.
@@ -105,7 +107,7 @@ pub enum RequestResponseMessage<TRequest, TResponse> {
         /// The sender of the request who is awaiting a response.
         ///
         /// See [`RequestResponse::send_response`].
-        channel: ResponseChannel<TResponse>,
+        channel: ResponseChannel<TChannelResponse>,
     },
     /// A response message.
     Response {
@@ -120,13 +122,13 @@ pub enum RequestResponseMessage<TRequest, TResponse> {
 
 /// The events emitted by a [`RequestResponse`] protocol.
 #[derive(Debug)]
-pub enum RequestResponseEvent<TRequest, TResponse> {
+pub enum RequestResponseEvent<TRequest, TResponse, TChannelResponse = TResponse> {
     /// An incoming message (request or response).
     Message {
         /// The peer who sent the message.
         peer: PeerId,
         /// The incoming message.
-        message: RequestResponseMessage<TRequest, TResponse>
+        message: RequestResponseMessage<TRequest, TResponse, TChannelResponse>
     },
     /// An outbound request failed.
     OutboundFailure {
@@ -318,9 +320,29 @@ where
         }
     }
 
-    /// Wrap this behaviour in [`Throttled`] to limit the number of concurrent requests per peer.
-    pub fn throttled(self) -> Throttled<TCodec> {
-        Throttled::new(self)
+    /// Creates a `RequestResponse` which limits requests per peer.
+    ///
+    /// The behaviour is wrapped in [`Throttled`] and assumes static knowledge
+    /// about the limits of peers which are then enforced at runtime.
+    pub fn throttled_static<I>(c: TCodec, protos: I, cfg: RequestResponseConfig) -> Throttled<TCodec>
+    where
+        I: IntoIterator<Item = (TCodec::Protocol, ProtocolSupport)>
+    {
+        Throttled::new(RequestResponse::new(c, protos, cfg))
+    }
+
+    /// Creates a `RequestResponse` which limits requests per peer.
+    ///
+    /// The behaviour is wrapped in [`Dynamic`] and detects the limits
+    /// per peer at runtime which are then enforced.
+    pub fn throttled_dynamic<I>(c: TCodec, protos: I, cfg: RequestResponseConfig) -> Dynamic<TCodec>
+    where
+        I: IntoIterator<Item = (TCodec::Protocol, ProtocolSupport)>,
+        TCodec: Send,
+        TCodec::Protocol: Sync
+    {
+        let protos = protos.into_iter().map(|(p, ps)| (codec::header::ProtocolWrapper::v1(p), ps));
+        Dynamic::new(RequestResponse::new(codec::header::Codec::new(c), protos, cfg))
     }
 
     /// Initiates sending a request.
@@ -619,6 +641,7 @@ where
                             error: InboundFailure::ResponseOmission
                         }));
             }
+            RequestResponseHandlerEvent::ResponseSent(_) => {} // nothing to do
         }
     }
 

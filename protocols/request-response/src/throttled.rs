@@ -84,9 +84,9 @@ impl Default for PeerInfo {
 
 /// A Wrapper around [`RequestResponseEvent`].
 #[derive(Debug)]
-pub enum Event<Req, Res> {
+pub enum Event<Req, Res, CRes = Res> {
     /// A regular request-response event.
-    Event(RequestResponseEvent<Req, Res>),
+    Event(RequestResponseEvent<Req, Res, CRes>),
     /// We received more inbound requests than allowed.
     TooManyInboundRequests(PeerId),
     /// When previously reaching the send limit of a peer,
@@ -254,7 +254,7 @@ where
     fn inject_disconnected(&mut self, peer: &PeerId) {
         log::trace!("{:08x}: disconnected from {}", self.id, peer);
         self.limits.remove(peer);
-        self.behaviour.inject_disconnected(peer);
+        self.behaviour.inject_disconnected(peer)
     }
 
     fn inject_dial_failure(&mut self, peer: &PeerId) {

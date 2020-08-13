@@ -140,7 +140,9 @@ where
     /// An inbound request failed to negotiate a mutually supported protocol.
     InboundUnsupportedProtocols(RequestId),
     /// An inbound request was not answered with a response.
-    InboundResponseOmission(RequestId)
+    InboundResponseOmission(RequestId),
+    /// A Response has been sent.
+    ResponseSent(RequestId)
 }
 
 impl<TCodec> ProtocolsHandler for RequestResponseHandler<TCodec>
@@ -191,10 +193,9 @@ where
     fn inject_fully_negotiated_inbound(
         &mut self,
         (): (),
-        _id: RequestId
+        id: RequestId
     ) {
-        // Nothing to do, as the response has already been sent
-        // as part of the upgrade.
+        self.pending_events.push_back(RequestResponseHandlerEvent::ResponseSent(id))
     }
 
     fn inject_fully_negotiated_outbound(

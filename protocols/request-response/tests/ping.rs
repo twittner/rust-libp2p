@@ -127,11 +127,11 @@ fn ping_protocol_throttled() {
     let cfg = RequestResponseConfig::default();
 
     let (peer1_id, trans) = mk_transport();
-    let ping_proto1 = RequestResponse::new(PingCodec(), protocols.clone(), cfg.clone()).throttled();
+    let ping_proto1 = RequestResponse::throttled_static(PingCodec(), protocols.clone(), cfg.clone());
     let mut swarm1 = Swarm::new(trans, ping_proto1, peer1_id.clone());
 
     let (peer2_id, trans) = mk_transport();
-    let ping_proto2 = RequestResponse::new(PingCodec(), protocols, cfg).throttled();
+    let ping_proto2 = RequestResponse::throttled_static(PingCodec(), protocols, cfg);
     let mut swarm2 = Swarm::new(trans, ping_proto2, peer2_id.clone());
 
     let (mut tx, mut rx) = mpsc::channel::<Multiaddr>(1);
@@ -218,11 +218,11 @@ fn ping_protocol_limit_violation() {
     let cfg = RequestResponseConfig::default();
 
     let (peer1_id, trans) = mk_transport();
-    let ping_proto1 = RequestResponse::new(PingCodec(), protocols.clone(), cfg.clone()).throttled();
+    let ping_proto1 = RequestResponse::throttled_static(PingCodec(), protocols.clone(), cfg.clone());
     let mut swarm1 = Swarm::new(trans, ping_proto1, peer1_id.clone());
 
     let (peer2_id, trans) = mk_transport();
-    let ping_proto2 = RequestResponse::new(PingCodec(), protocols, cfg).throttled();
+    let ping_proto2 = RequestResponse::throttled_static(PingCodec(), protocols, cfg);
     let mut swarm2 = Swarm::new(trans, ping_proto2, peer2_id.clone());
 
     let (mut tx, mut rx) = mpsc::channel::<Multiaddr>(1);
@@ -303,6 +303,103 @@ fn ping_protocol_limit_violation() {
                 throttled::Event::Event(RequestResponseEvent::OutboundFailure { error, .. }) => {
                     assert!(matches!(error, OutboundFailure::ConnectionClosed));
                     break
+                }
+                e => panic!("Peer2: Unexpected event: {:?}", e)
+            }
+        }
+    };
+
+    async_std::task::spawn(Box::pin(peer1));
+    let () = async_std::task::block_on(peer2);
+}
+
+#[test]
+fn ping_protocol_dynamic() {
+    let _ = env_logger::try_init();
+    let num_pings: u8 = rand::thread_rng().gen_range(40, 100);
+
+    let ping = Ping("ping".to_string().into_bytes());
+    let pong = Pong("pong".to_string().into_bytes());
+
+    let protocols = iter::once((PingProtocol(), ProtocolSupport::Full));
+    let cfg = RequestResponseConfig::default();
+
+    let (peer1_id, trans) = mk_transport();
+    let ping_proto1 = RequestResponse::throttled_dynamic(PingCodec(), protocols.clone(), cfg.clone());
+    let mut swarm1 = Swarm::new(trans, ping_proto1, peer1_id.clone());
+
+    let (peer2_id, trans) = mk_transport();
+    let ping_proto2 = RequestResponse::throttled_dynamic(PingCodec(), protocols, cfg);
+    let mut swarm2 = Swarm::new(trans, ping_proto2, peer2_id.clone());
+
+    let (mut tx, mut rx) = mpsc::channel::<Multiaddr>(1);
+
+    let addr = "/ip4/127.0.0.1/tcp/0".parse().unwrap();
+    Swarm::listen_on(&mut swarm1, addr).unwrap();
+
+    let expected_ping = ping.clone();
+    let expected_pong = pong.clone();
+
+    let mut limit1: u16 = rand::thread_rng().gen_range(1, 10);
+    let limit2: u16 = rand::thread_rng().gen_range(1, 10);
+    swarm1.set_default_limit(NonZeroU16::new(limit1).unwrap());
+    swarm2.set_default_limit(NonZeroU16::new(limit2).unwrap());
+
+    let peer1 = async move {
+        while let Some(_) = swarm1.next().now_or_never() {}
+
+        let l = Swarm::listeners(&swarm1).next().unwrap();
+        tx.send(l.clone()).await.unwrap();
+        for i in 1.. {
+            match swarm1.next().await {
+                throttled::Event::Event(RequestResponseEvent::Message {
+                    peer,
+                    message: RequestResponseMessage::Request { request, channel, .. },
+                }) => {
+                    assert_eq!(&request, &expected_ping);
+                    assert_eq!(&peer, &peer2_id);
+                    swarm1.send_response(channel, pong.clone());
+                },
+                e => panic!("Peer1: Unexpected event: {:?}", e)
+            }
+            if i % 7 == 0 {
+                limit1 += 3;
+                swarm1.increase_receive_limit(&peer2_id, NonZeroU16::new(limit1).unwrap());
+            }
+        }
+    };
+
+    let peer2 = async move {
+        let mut count = 0;
+        let addr = rx.next().await.unwrap();
+        swarm2.add_address(&peer1_id, addr.clone());
+
+        let mut blocked = false;
+        let mut req_ids = HashSet::new();
+
+        loop {
+            if !blocked {
+                while let Some(id) = swarm2.send_request(&peer1_id, ping.clone()).ok() {
+                    req_ids.insert(id);
+                }
+                blocked = true;
+            }
+            match swarm2.next().await {
+                throttled::Event::ResumeSending(peer) => {
+                    assert_eq!(peer, peer1_id);
+                    blocked = false
+                }
+                throttled::Event::Event(RequestResponseEvent::Message {
+                    peer,
+                    message: RequestResponseMessage::Response { request_id, response }
+                }) => {
+                    count += 1;
+                    assert_eq!(&response, &expected_pong);
+                    assert_eq!(&peer, &peer1_id);
+                    assert!(req_ids.remove(&request_id));
+                    if count >= num_pings {
+                        break
+                    }
                 }
                 e => panic!("Peer2: Unexpected event: {:?}", e)
             }
